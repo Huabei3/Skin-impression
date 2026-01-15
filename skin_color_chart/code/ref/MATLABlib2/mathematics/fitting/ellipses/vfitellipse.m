@@ -1,0 +1,27 @@
+function v = vfitellipse(X)
+%fit an ellipse to data in X
+%ellipse format -->v=[Rmax,Rmin,xc,yc,theta]
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+x=X(:,1);y=X(:,2);
+D1 = [x .^ 2, x .* y, y .^ 2]; % quadratic part of the design matrix
+D2 = [x, y, ones(size(x))]; % linear part of the design matrix
+S1 = D1' * D1; % quadratic part of the scatter matrix
+S2 = D1' * D2; % combined part of the scatter matrix
+S3 = D2' * D2; % linear part of the scatter matrix
+T = - inv(S3) * S2'; % for getting a2 from a1
+M = S1 + S2 * T; % reduced scatter matrix
+M = [M(3, :) ./ 2; - M(2, :); M(1, :) ./ 2]; % premultiply by inv(C1)
+ [evec, eval] = eig(M); % solve eigensystem
+cond = 4 * evec(1, :) .* evec(3, :) - evec(2, :) .^ 2; % evaluate a’Ca
+a1 = evec(:, find(cond > 0)); % eigenvector for min. pos. eigenvalue
+a = [a1; T * a1]; % ellipse coefficients
+%scale ellipse coefficients so that a(2)=2*cov(x,y)
+%covxy=cov(x,y);
+%a=a./a(2).*(2*covxy(1,2));
+
+%change sign so that xsig² and ysig² > 0
+signsig=sign(a(1));%find sign of sig² --> if neg then rho=-abs(rho)
+a=signsig*a;
+
+v=solveellipse(a);
+end

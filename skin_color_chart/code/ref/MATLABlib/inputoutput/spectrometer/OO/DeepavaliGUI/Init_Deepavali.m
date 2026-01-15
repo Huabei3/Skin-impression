@@ -1,0 +1,3 @@
+global hDeepavali colorimetry
+startup
+hDeepavali=Deepavali;
