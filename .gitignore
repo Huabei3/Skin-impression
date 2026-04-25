@@ -1,0 +1,6 @@
+# 忽略所有非 .m 文件
+*.*
+
+# 例外：保留 .m 文件和 .gitignore
+!.m
+!.gitignore
