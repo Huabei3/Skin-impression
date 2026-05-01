@@ -27,14 +27,14 @@ using_model_type="each_self";
 % ========== 新增：scene_type 平移开关 ==========
 % "none": 不进行平移（原始行为）
 % "scene_types": 根据 scene_type 加载 rela_incre 对 par(:,4:5) 进行百分比平移
-% count_scene_type = "scene_types";
-count_scene_type = "scenes";
+count_scene_type = "scene_types";
+% count_scene_type = "scenes";
 % count_scene_type = "none";
 
 % ========== 新增：是否绘制检验图片 ==========
 % "true": 为每个 (i_model, i_par) 组合绘制一张LAB散点图+椭圆轮廓图
 % "false": 不绘制
-if_draw_pics = "false";
+if_draw_pics = "true";
 
 % ========== 新增：排除异常数据开关 ==========
 % "true": 对于 p_group 中 >0.5 的百分比 <10% 或 >90% 的 i_par，不计入 xlsx 表格和平均计算
@@ -60,7 +60,7 @@ version="new";
 
 p_pre = cell(20, n_attribute);
 p_visual = cell(20, n_attribute);
-for i_iOr=1:1
+for i_iOr=1:2
     iOr=iOrs(i_iOr);
     % 颜色标签列表（H=高照度，M=中照度，L=低照度，D65=标准光源）
     if iOr=='i'
@@ -147,7 +147,7 @@ for i_iOr=1:1
 
 
     % for i_model=1:length(new_names)
-    for i_model=17:length(new_names)
+    for i_model=1:length(new_names)
         current_model_name = new_names(i_model);
         source_folder=fullfile('mask',strcat(current_model_name,iOr));
         source_folder=char(source_folder);
@@ -386,32 +386,49 @@ for i_iOr=1:1
                         end
                     end
 
-                    % ========== 新增：绘制检验图片 ==========
-                    if strcmp(if_draw_pics, "true")
+                    % ========== 新增：iOr="i"时跳过 i_par>14 的数据 ==========
+                    % 当 iOr 为室内光源且 i_par > 14 时，不计入 xlsx 表格
+                    if strcmp(iOr, 'i') && i_par > 14
+                        correlation_table_data{row_idx_in_table, attribute_idx_in_list + 1} = NaN;
+                        dE_table_data{row_idx_in_table, attribute_idx_in_list + 1} = NaN;
+                        rmse_table_data{row_idx_in_table, attribute_idx_in_list + 1} = NaN;
+                    end
+
+                    % ========== 新增：绘制检验图片（仅当 r < 0.6 时） ==========
+                    if strcmp(if_draw_pics, "true") && correlation_coefficient < 0.6
                         % 创建检验图片保存路径
-                        check_pic_folder = fullfile(output_dir, "check_pics",iOr);
+                        check_pic_folder = fullfile(output_dir, "check_pics", iOr);
                         attr_folder = fullfile(check_pic_folder, attribute_serial);
-                        save_pic_folder = fullfile(attr_folder, nation_serial,current_model_name);
-                        if ~exist(save_pic_folder, 'dir')
-                            mkdir(save_pic_folder);
+                        base_pic_folder = fullfile(attr_folder, nation_serial, current_model_name);
+                        visual_p_folder = fullfile(base_pic_folder, 'visual_p');
+                        predict_p_folder = fullfile(base_pic_folder, 'predict_p');
+
+                        % 创建子文件夹
+                        if ~exist(visual_p_folder, 'dir')
+                            mkdir(visual_p_folder);
+                        end
+                        if ~exist(predict_p_folder, 'dir')
+                            mkdir(predict_p_folder);
                         end
 
                         % 图片文件名
-                        pic_filename = sprintf("%02d%s.jpg", i_par, pcn(i_par));
-                        pic_filepath = fullfile(save_pic_folder, pic_filename);
+                        pic_filename = sprintf("%02d%s_r%.3f.jpg", i_par, pcn(i_par), correlation_coefficient);
 
-                        % 创建图形
+                        % 计算坐标轴范围
+                        lim_max = max(max(lab_group(:, 2)), max(lab_group(:, 3))) + 10;
+                        lim_min = min(min(lab_group(:, 2)), min(lab_group(:, 3))) - 10;
+
+                        % ========== 图片1: visual_p (用 p_group 着色) ==========
+                        pic_visual_path = fullfile(visual_p_folder, pic_filename);
                         figure("Visible", "off");
                         hold on;
-
-                        % 绘制散点图：lab_group 的 a*(col 2) 和 b*(col 3)，颜色为 p_group
                         scatter(lab_group(:, 2), lab_group(:, 3), 30, p_group, 'filled');
                         colormap('jet');
                         colorbar;
-                        caxis([0, 1]); % p_group 范围为 0-1
+                        caxis([0, 1]);
                         hold on;
 
-                        % 绘制椭圆轮廓（使用等高线）
+                        % 绘制椭圆轮廓
                         check_data2 = par(4) + (-30:0.2:30);
                         check_data3 = par(5) + (-30:0.2:30);
                         [data2, data3] = meshgrid(check_data2, check_data3);
@@ -422,53 +439,73 @@ for i_iOr=1:1
                         contour(data2, data3, y_contour, [0.5, 1], 'Linewidth', 1.5, 'Color', 'k');
                         hold on;
 
-                        % 绘制 par(4:5) 中心点（圆形标记）
+                        % 绘制中心点
                         scatter(par(4), par(5), 100, 'o', 'filled', 'MarkerEdgeColor', 'k', 'LineWidth', 2);
                         hold on;
-
-                        % pct_above_half 已在前面计算过，直接使用
-
-                        % 绘制 par_mean(4:5) 中心点（星形标记）
-                        % 如果百分比 < 10% 或 > 90%，用黑色；否则用红色
                         if pct_above_half < 10 || pct_above_half > 90
-                            par_mean_color = 'k';  % 黑色
+                            par_mean_color = 'k';
                         else
-                            par_mean_color = 'r';  % 红色
+                            par_mean_color = 'r';
                         end
                         scatter(par_mean(4), par_mean(5), 150, '*', 'MarkerEdgeColor', par_mean_color, 'LineWidth', 2);
                         hold on;
 
-                        % 添加坐标轴和参考线
-                        lim_max = max(max(lab_group(:, 2)), max(lab_group(:, 3))) + 10;
-                        lim_min = min(min(lab_group(:, 2)), min(lab_group(:, 3))) - 10;
-                        line([0, 0], [lim_min, lim_max], 'Color', 'k', 'LineStyle', '--'); % a*=0
-                        line([lim_min, lim_max], [0, 0], 'Color', 'k', 'LineStyle', '--'); % b*=0
-
-                        % 设置图形属性
+                        % 坐标轴和参考线
+                        line([0, 0], [lim_min, lim_max], 'Color', 'k', 'LineStyle', '--');
+                        line([lim_min, lim_max], [0, 0], 'Color', 'k', 'LineStyle', '--');
                         axis equal;
                         xlim([lim_min, lim_max]);
                         ylim([lim_min, lim_max]);
                         xlabel('a*');
                         ylabel('b*');
-
-                        % 添加标题和图例
-                        title(sprintf('%s - %s - %s\n(p_group>0.5: %.1f%%)', ...
-                            current_model_name, current_pcn_name, current_attribute_name, pct_above_half));
-                        legend({'Scatter (p_group color)', 'Contour (par)', ...
-                               'par(4:5)', sprintf('par\\_mean(4:5) [%s]', par_mean_color)}, 'Location', 'best');
-
-                        % 保存图片
-                        saveas(gcf, pic_filepath);
+                        title(sprintf('%s - %s\n(visual: p_group, r=%.3f)', ...
+                            current_pcn_name, current_attribute_name, correlation_coefficient));
+                        saveas(gcf, pic_visual_path);
                         close(gcf);
 
-                        fprintf('  已保存检验图片: %s\n', pic_filepath);
+                        % ========== 图片2: predict_p (用 y 着色) ==========
+                        pic_predict_path = fullfile(predict_p_folder, pic_filename);
+                        figure("Visible", "off");
+                        hold on;
+                        scatter(lab_group(:, 2), lab_group(:, 3), 30, y, 'filled');
+                        colormap('jet');
+                        colorbar;
+                        caxis([0, 1]);
+                        hold on;
+
+                        % 绘制椭圆轮廓
+                        contour(data2, data3, y_contour, [0.5, 1], 'Linewidth', 1.5, 'Color', 'k');
+                        hold on;
+
+                        % 绘制中心点
+                        scatter(par(4), par(5), 100, 'o', 'filled', 'MarkerEdgeColor', 'k', 'LineWidth', 2);
+                        hold on;
+                        scatter(par_mean(4), par_mean(5), 150, '*', 'MarkerEdgeColor', par_mean_color, 'LineWidth', 2);
+                        hold on;
+
+                        % 坐标轴和参考线
+                        line([0, 0], [lim_min, lim_max], 'Color', 'k', 'LineStyle', '--');
+                        line([lim_min, lim_max], [0, 0], 'Color', 'k', 'LineStyle', '--');
+                        axis equal;
+                        xlim([lim_min, lim_max]);
+                        ylim([lim_min, lim_max]);
+                        xlabel('a*');
+                        ylabel('b*');
+                        title(sprintf('%s - %s\n(predict: y, r=%.3f)', ...
+                            current_pcn_name, current_attribute_name, correlation_coefficient));
+                        saveas(gcf, pic_predict_path);
+                        close(gcf);
+
+                        fprintf('  已保存检验图片: visual_p/%s, predict_p/%s\n', pic_filename, pic_filename);
                     end
 
                     % fprintf('  - 光源: %s, 属性: %s, 相关系数 = %.4f, rmse = %.2f%%\n', ...
                     %     current_pcn_name, current_attribute_name, correlation_coefficient, rmse);
                 else
-                    fprintf('警告: 无法计算模特 %s, 光源 %s, 属性 %s 的相关性或rmse。原因：y或p_group为空或大小不匹配或数据不足。\n', ...
-                            current_model_name, current_pcn_name, current_attribute_name);
+                    fprintf(['警告: 无法计算模特 %s, 光源 %s, 属性 %s 的相关性或rmse。' ...
+                        '原因：y或p_group为空或大小不匹配或数据不足。\n'], ...
+                            current_model_name, current_pcn_name, ...
+                            current_attribute_name);
                     correlation_table_data{row_idx_in_table, attribute_idx_in_list + 1} = NaN;
                     rmse_table_data{row_idx_in_table, attribute_idx_in_list + 1} = NaN;
                 end
