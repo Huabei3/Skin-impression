@@ -28,13 +28,13 @@ using_model_type="each_self";
 % ========== 消融实验配置 ==========
 % "scene_types":      完整模型 — 根据 scene_type 分组加载 rela_incre 对 par(:,4:5) 进行百分比平移
 % "no_scene_types":   消融 — 不进行平移（等同于无场景适配的 baseline）
-% "full_CAT":         消融 — TODO: 待实现（完全CAT校正，不区分场景）
-% "no_nation":        消融 — TODO: 待实现（不区分人种，使用 all 的模型参数）
-% "no_L_depend":      消融 — TODO: 待实现（去除 L* 条件化，使用常数 C*）
-ablation_type = "scene_types";
+% "full_CAT":         消融 — （完全CAT校正，不区分场景）
+% "no_nation":        消融 — （不区分人种，使用 all 的模型参数）
+% "no_L_depend":      消融 — （去除 L* 条件化，使用常数 C*）
+% ablation_type = "scene_types";
 % ablation_type = "no_scene_types";
 % ablation_type = "full_CAT";
-% ablation_type = "no_nation";
+ablation_type = "no_nation";
 % ablation_type = "no_L_depend";
 
 % ========== 新增：是否绘制检验图片 ==========
@@ -74,10 +74,26 @@ VIVO_noCAT_file=fullfile(VIVO_noCAT_folder,"Peggy_VIVO_table.mat");
 VIVO_noCAT_data=load(VIVO_noCAT_file);
 VIVO_noCAT_table=VIVO_noCAT_data.fit_table;
 
-p_pre = cell(20, n_attribute);
-p_visual = cell(20, n_attribute);
-for i_iOr=1:2
-    iOr=iOrs(i_iOr);
+    %% ========== VIVO_table 预索引（提出循环外，只算一次） ==========
+    fprintf('正在预处理 VIVO_table 索引...\n');
+    scene_str    = cellfun(@string, VIVO_table.scene,         'UniformOutput', true);
+    model_str    = cellfun(@string, VIVO_table.model_id,      'UniformOutput', true);
+    observer_str = cellfun(@string, VIVO_table.observer_type, 'UniformOutput', true);
+    attr_str     = cellfun(@string, VIVO_table.attribute,     'UniformOutput', true);
+    fprintf('VIVO_table 索引预处理完成（%d 行）\n', length(scene_str));
+
+    %% ========== VIVO_noCAT_table 预索引（提出循环外，只算一次） ==========
+    fprintf('正在预处理 VIVO_noCAT_table 索引...\n');
+    scene_str_noCAT    = cellfun(@string, VIVO_noCAT_table.scene,         'UniformOutput', true);
+    model_str_noCAT    = cellfun(@string, VIVO_noCAT_table.model_id,      'UniformOutput', true);
+    observer_str_noCAT = cellfun(@string, VIVO_noCAT_table.observer_type, 'UniformOutput', true);
+    attr_str_noCAT     = cellfun(@string, VIVO_noCAT_table.attribute,     'UniformOutput', true);
+    fprintf('VIVO_noCAT_table 索引预处理完成（%d 行）\n', height(VIVO_noCAT_table));
+
+    p_pre = cell(20, n_attribute);
+    p_visual = cell(20, n_attribute);
+    for i_iOr=1:2
+        iOr=iOrs(i_iOr);
     % 颜色标签列表（H=高照度，M=中照度，L=低照度，D65=标准光源）
     if iOr=='i'
         % 颜色标签列表（H=高照度，M=中照度，L=低照度，D65=标准光源）
@@ -186,6 +202,31 @@ for i_iOr=1:2
 
         i_type=select_type(model); % 假设 select_type 函数已定义
 
+        %% ---------- 预索引：按 model 筛选行 (VIVO_table) ----------
+        idx_model = strcmp(model_str, current_model_name);
+        model_rows = find(idx_model);  % 当前 model 在 VIVO_table 中的所有行号
+        if isempty(model_rows)
+            fprintf('--- 模特 %s 在 VIVO_table 中无数据，跳过 ---\n', current_model_name);
+            continue;
+        end
+        % 预取当前 model 的子集（后续所有比较只在这个子集上做）
+        scene_str_sub    = scene_str(model_rows);
+        observer_str_sub = observer_str(model_rows);
+        attr_str_sub     = attr_str(model_rows);
+
+        %% ---------- 预索引：按 model 筛选行 (VIVO_noCAT_table) ----------
+        idx_model_noCAT = strcmp(model_str_noCAT, current_model_name);
+        model_rows_noCAT = find(idx_model_noCAT);
+        if ~isempty(model_rows_noCAT)
+            scene_str_noCAT_sub    = scene_str_noCAT(model_rows_noCAT);
+            observer_str_noCAT_sub = observer_str_noCAT(model_rows_noCAT);
+            attr_str_noCAT_sub     = attr_str_noCAT(model_rows_noCAT);
+        else
+            scene_str_noCAT_sub    = [];
+            observer_str_noCAT_sub = [];
+            attr_str_noCAT_sub     = [];
+        end
+
         % 创建用于存储当前model所有相关性的表格数据
         correlation_table_data = cell(length(pcn) + 1, length(filtered_attribute_names) + 1);
         dE_table_data = cell(length(pcn) + 1, length(filtered_attribute_names) + 1);
@@ -220,6 +261,40 @@ for i_iOr=1:2
             % 获取当前光源（pcn）对应的行索引
             row_idx_in_table = i_par + 1; % +1 是因为第一行是表头
 
+            %% ---------- 预索引：按 scene 筛选子集 ----------
+            idx_scene_sub = contains(scene_str_sub, string(current_pcn_name), 'IgnoreCase', true);
+            scene_rows = model_rows(idx_scene_sub);  % model+scene 命中的全局行号
+            if isempty(scene_rows)
+                % 当前光源在 VIVO_table 中无数据，所有 attribute 设为 NaN
+                for attribute_idx_in_list = 1:length(attributes_to_process)
+                    correlation_table_data{row_idx_in_table, attribute_idx_in_list + 1} = NaN;
+                    dE_table_data{row_idx_in_table, attribute_idx_in_list + 1} = NaN;
+                    rmse_table_data{row_idx_in_table, attribute_idx_in_list + 1} = NaN;
+                end
+                continue;
+            end
+            % 预取 scene 子集的 observer 和 attribute (VIVO_table)
+            observer_str_scene = observer_str_sub(idx_scene_sub);
+            attr_str_scene     = attr_str_sub(idx_scene_sub);
+
+            %% ---------- 预索引：按 scene 筛选子集 (VIVO_noCAT_table) ----------
+            if ~isempty(model_rows_noCAT)
+                idx_scene_sub_noCAT = contains(scene_str_noCAT_sub, string(current_pcn_name), 'IgnoreCase', true);
+                scene_rows_noCAT = model_rows_noCAT(idx_scene_sub_noCAT);
+                if ~isempty(scene_rows_noCAT)
+                    observer_str_noCAT_scene = observer_str_noCAT_sub(idx_scene_sub_noCAT);
+                    attr_str_noCAT_scene     = attr_str_noCAT_sub(idx_scene_sub_noCAT);
+                else
+                    observer_str_noCAT_scene = [];
+                    attr_str_noCAT_scene     = [];
+                    scene_rows_noCAT = [];
+                end
+            else
+                scene_rows_noCAT = [];
+                observer_str_noCAT_scene = [];
+                attr_str_noCAT_scene     = [];
+            end
+
             for attribute_idx_in_list = 1:length(attributes_to_process)
                 attribute = attributes_to_process(attribute_idx_in_list);
 
@@ -233,31 +308,21 @@ for i_iOr=1:2
                 else
                     obs_type_used=obs_type;
                 end
-                % ===== 主方法：从 VIVO_table 加载 lab_group 和 p_group =====
-                % VIVO_table 字段是 cell array 套 string array（显示为 {["Harmony"]} 格式）
-                % 必须先用 cellfun(@string) 提取内容，再用 strcmp/contains 比较
-                scene_str    = cellfun(@string, VIVO_table.scene,           'UniformOutput', true);
-                model_str    = cellfun(@string, VIVO_table.model_id,        'UniformOutput', true);
-                observer_str = cellfun(@string, VIVO_table.observer_type,   'UniformOutput', true);
-                attr_str     = cellfun(@string, VIVO_table.attribute,       'UniformOutput', true);
-
-                idx_scene = contains(scene_str, string(current_pcn_name), 'IgnoreCase', true);
-                idx_model = strcmp(model_str, current_model_name);
-                idx_obs   = strcmp(observer_str, obs_type_used);
-                idx_attr  = strcmp(attr_str, current_attribute_name);
-
-                idx = idx_scene & idx_model & idx_obs & idx_attr;
+                % ===== 从预索引子集加载（不再重复 cellfun） =====
+                idx_obs  = strcmp(observer_str_scene, obs_type_used);
+                idx_attr = strcmp(attr_str_scene, current_attribute_name);
+                idx = idx_obs & idx_attr;
 
                 lab_group = [];
                 p_group = [];
+                lab_group_noCAT = [];
 
                 if any(idx)
-                    row_idx = find(idx, 1);
+                    % 映射回 VIVO_table 全局行号
+                    row_idx = scene_rows(idx);
+                    row_idx = row_idx(1);
                     lab_group = VIVO_table.lab_values{row_idx};
                     p_group   = VIVO_table.opinion_scores{row_idx};
-                    if strcmp(ablation_type,"full_CAT")
-                        lab_group_noCAT = VIVO_noCAT_table.lab_values{row_idx};
-                    end
                     fprintf('  [VIVO_table] 匹配成功: %s | model=%s | observer=%s | attr=%s\n', ...
                         string(VIVO_table.scene(row_idx)), current_model_name, obs_type_used, current_attribute_name);
                 else
@@ -276,7 +341,26 @@ for i_iOr=1:2
                     end
                 end
 
-
+                % ===== 从 VIVO_noCAT_table 独立查找 row_idx_noCAT =====
+                if strcmp(ablation_type, "full_CAT")
+                    if ~isempty(scene_rows_noCAT)
+                        idx_obs_noCAT  = strcmp(observer_str_noCAT_scene, obs_type_used);
+                        idx_attr_noCAT = strcmp(attr_str_noCAT_scene, current_attribute_name);
+                        idx_noCAT       = idx_obs_noCAT & idx_attr_noCAT;
+                        if any(idx_noCAT)
+                            row_idx_noCAT = scene_rows_noCAT(idx_noCAT);
+                            row_idx_noCAT = row_idx_noCAT(1);
+                            lab_group_noCAT = VIVO_noCAT_table.lab_values{row_idx_noCAT};
+                            fprintf('  [VIVO_noCAT_table] 匹配成功: row_idx_noCAT=%d\n', row_idx_noCAT);
+                        else
+                            fprintf('警告: VIVO_noCAT_table 中无匹配 (scene="%s", model=%s, observer=%s, attr=%s)\n', ...
+                                current_pcn_name, current_model_name, obs_type_used, current_attribute_name);
+                        end
+                    else
+                        fprintf('警告: VIVO_noCAT_table 中 model=%s 无 scene="%s" 数据\n', ...
+                            current_model_name, current_pcn_name);
+                    end
+                end
 
                 % 检查是否成功加载
                 if isempty(lab_group) || isempty(p_group)
@@ -296,6 +380,12 @@ for i_iOr=1:2
                     "efit_p\unscaled\model_fullpara\d65",version,"i", obs_type);
 
                 if strcmp(ablation_type, "no_L_depend")
+                    nation50_folder="D:\work\VIVOskinExpe\analyze\ellip_pic_p\" + ...
+                        "efit_p\50\unscaled\attr\ACSA\nation1\i\non_model\eng\attr\ACSA";
+                    nation50_file=fullfile(nation50_folder,"fitRes.mat");
+                    nation50_data=load(nation50_file);
+                    par=nation50_data.parNr_all{1,i_nation,attribute};
+
                 else
                     fullpara_data=load(fullfile(model_fupara_file, ...
                         strcat(attribute_serial,"_all_curve_params.mat")));
@@ -303,6 +393,9 @@ for i_iOr=1:2
                         i_nation_used=5;
                     else
                         i_nation_used=i_nation;
+                    end
+                    if i_nation==3
+                        disp("d")
                     end
                     
     
@@ -372,10 +465,10 @@ for i_iOr=1:2
 
 
                 if strcmp(ablation_type,"full_CAT") && ~isempty(lab_group_noCAT)
-                    lab_group_noCAT= VIVO_noCAT_table.lab_values{row_idx};
-                    XYZw_pre=VIVO_table.other_info.XYZw_pre_val{row_idx};
+                    lab_group_noCAT= VIVO_noCAT_table.lab_values{row_idx_noCAT};
+                    XYZw_pre=VIVO_table.other_info{row_idx}.XYZw_pre_val;
                     XYZw_pre_scaled=XYZw_pre./XYZw_pre(2).*100;
-                    E_val=VIVO_table.other_info.E_val{row_idx};
+                    E_val=VIVO_table.other_info{row_idx}.E_val;
 
                     F=0.8;
                     omega=2*pi*(1-cos(pi/36));
@@ -446,13 +539,7 @@ for i_iOr=1:2
                         end
                     end
 
-                    % ========== 新增：iOr="i"时跳过 i_par>14 的数据 ==========
-                    % 当 iOr 为室内光源且 i_par > 14 时，不计入 xlsx 表格
-                    if strcmp(iOr, 'i') && i_par > 14
-                        correlation_table_data{row_idx_in_table, attribute_idx_in_list + 1} = NaN;
-                        dE_table_data{row_idx_in_table, attribute_idx_in_list + 1} = NaN;
-                        rmse_table_data{row_idx_in_table, attribute_idx_in_list + 1} = NaN;
-                    end
+
 
                     % ========== 新增：绘制检验图片（仅当 r < 0.6 时） ==========
                     if strcmp(if_draw_pics, "true") && correlation_coefficient < 0.6
@@ -595,7 +682,19 @@ for i_iOr=1:2
     write_mean_summary(excel_output_path_rmse, new_names, nation_indices(1:4), nations);
 end
 
-fullfile(pwd,excel_output_path_r)
+
+pwd1=char(pwd);
+slashes=find(pwd1=='\');
+show_path=pwd1(1:slashes(end-1)-1);
+
+
+excel_output_path_r1=char(excel_output_path_r);
+slashes=find(excel_output_path_r1=='\');
+show_path1=excel_output_path_r1(slashes(2)+1:end);
+
+
+
+fullfile(show_path,show_path1)
 save(fullfile(output_dir,"p_vNp.mat"),"p_pre","p_visual");
 
 
