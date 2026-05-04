@@ -1,5 +1,19 @@
 clc;clear;close all;
 addpath("..\utils\")
+
+% ========== 消融实验配置 ==========
+% "":                默认 — 不进行场景适配（向后兼容）
+% "scene_types":     完整模型 — 根据 scene_type 分组加载 rela_incre 对 par(4:5) 进行百分比平移
+% ablation_type = "";  % predict_all_in_one 默认不启用 scene_types
+ablation_type = "scene_types";
+
+% scene_type_indices 定义（对应 rs01-rs14 的分组）
+scene_type_indices{1} = [1, 2, 4, 5, 6];   % indoor
+scene_type_indices{2} = [3, 7, 8, 10, 12]; % outdoor
+scene_type_indices{3} = [13, 14];          % night
+scene_type_indices{4} = [9, 11];            % 另一分组
+n_scene_type = length(scene_type_indices);
+% =============================================
 %% 评价all-in-one
 %-----------load data--------------
 cherry_fitRes_file=fullfile("D:\work\ZJU_entire_skin\Cherry\software\skin colour\数据分析\分析过程\res\nation\weighted\fitRes\ellipPara.mat");
@@ -63,6 +77,21 @@ output_folder=fullfile("res","pic","all_in_one");
 if ~exist(output_folder,"dir")
     mkdir(output_folder);
 end
+
+% ========== 输出文件夹配置 ==========
+cross_res_folder=fullfile(pwd,"cross_research_res");
+if ~exist(cross_res_folder,"dir")
+    mkdir(cross_res_folder);
+end
+% xlsx 文件名包含 ablation_type
+if isempty(ablation_type)
+    ablation_suffix="default";
+else
+    ablation_suffix=ablation_type;
+end
+cross_res_xlsx=fullfile(cross_res_folder,...
+    sprintf("cross_research_res_%s.xlsx",ablation_suffix));
+
 sources=["david","cherry","summer","OPPO","peggy"];
 % sources=["peggy"];
 for i_source=1:length(sources)
@@ -230,7 +259,16 @@ for i_source=1:length(sources)
         de_cherry_ori1(i_img,:)=[cen_cherry_ori,cen_base,de_cherry_ori(i_img,1)];
     
         %peggy
-        [y_peggy,par_peggy,characteristics(i_img,:)]=predict_my(ave_base(1),points_base,1,"01Preference");
+        % 从场景名中提取 rs 序号作为 scene_idx（仅 scene_types 模式需要）
+        scene_idx_peggy = [];
+        if strcmp(ablation_type, "scene_types")
+            scene_char_peggy = char(base_table.scene{i_img});
+            rs_match = regexp(scene_char_peggy, 'rs(\d+)', 'tokens');
+            if ~isempty(rs_match)
+                scene_idx_peggy = str2double(rs_match{1}{1});
+            end
+        end
+        [y_peggy,par_peggy,characteristics(i_img,:)]=predict_my(ave_base(1),points_base,1,"01Preference",ablation_type,scene_idx_peggy);
         cen_peggy=[ave_base(1),par_peggy(1,4:5)];
         [r_peggy(i_img,1)] = corr(y_peggy, scores_base, 'Type', 'Pearson');    
         de_peggy(i_img,1)=deltaE2000(cen_peggy,cen_base);
@@ -313,5 +351,21 @@ for i_source=1:length(sources)
 end
 
 %%
-de_david2=de_david1;
-de_david2(:,7)=deltaE2000(de_david1(:,1:3),de_david1(:,4:6));
+
+% ========== 输出 result 和 result_ori 到 xlsx ==========
+model_names=["David","Cherry","Summer","OPPO","STIM"];  % 列名
+source_labels=sources;  % 行名 = david/cherry/summer/OPPO/peggy
+
+% --- Sheet 1: result ---
+ws_result=result;  % size: length(sources) x 5
+writetable(array2table(ws_result,'VariableNames',model_names,'RowNames',source_labels),...
+    cross_res_xlsx,'Sheet','result');
+
+% --- Sheet 2: result_ori ---
+ws_result_ori=result_ori;
+writetable(array2table(ws_result_ori,'VariableNames',model_names,'RowNames',source_labels),...
+    cross_res_xlsx,'Sheet','result_ori');
+
+fprintf("已输出 cross_research_res 至: %s\n",cross_res_xlsx);
+fprintf("  Sheet 'result':     %d x %d\n",size(result,1),size(result,2));
+fprintf("  Sheet 'result_ori': %d x %d\n",size(result_ori,1),size(result_ori,2));

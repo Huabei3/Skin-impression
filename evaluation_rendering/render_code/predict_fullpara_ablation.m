@@ -31,10 +31,10 @@ using_model_type="each_self";
 % "full_CAT":         消融 — （完全CAT校正，不区分场景）
 % "no_nation":        消融 — （不区分人种，使用 all 的模型参数）
 % "no_L_depend":      消融 — （去除 L* 条件化，使用常数 C*）
-% ablation_type = "scene_types";
+ablation_type = "scene_types";
 % ablation_type = "no_scene_types";
 % ablation_type = "full_CAT";
-ablation_type = "no_nation";
+% ablation_type = "no_nation";
 % ablation_type = "no_L_depend";
 
 % ========== 新增：是否绘制检验图片 ==========
@@ -156,6 +156,7 @@ VIVO_noCAT_table=VIVO_noCAT_data.fit_table;
     if ~exist(output_dir, 'dir')
         mkdir(output_dir);
     end
+    
     % 定义输出Excel文件的完整路径
     excel_output_path_r = fullfile(output_dir,strcat(iOr,obs_type,'_r.xlsx'));
     excel_output_path_dE = fullfile(output_dir,strcat(iOr,obs_type,'_dE.xlsx'));
@@ -407,7 +408,8 @@ VIVO_noCAT_table=VIVO_noCAT_data.fit_table;
                     a_theta=fullpara_data.a_theta_all(i_nation_used,:);
                     if strcmp(version,"new")
                         hue_angle=a_hue_angle(1);
-                        chroma=a_CL(1).*(average(i_par,1)) + a_CL(2);
+                        chroma=a_CL(1).*log(average(i_par,1)) + a_CL(2);
+                        % chroma=a_CL(1).*(average(i_par,1)) + a_CL(2);
                         long_axis=a_long_axis(1).*average(i_par,1).^3 + a_long_axis(2).*average(i_par,1).^2 +...
                             a_long_axis(3).*average(i_par,1) + a_long_axis(4);
                         short_axis=a_short_axis(1).*average(i_par,1).^3 + a_short_axis(2).*average(i_par,1).^2 +...
