@@ -1,6 +1,6 @@
 clc;clear;close all;
 addpath("..\utils\")
-
+% XYZ2lab
 % ========== 消融实验配置 ==========
 % "":                默认 — 不进行场景适配（向后兼容）
 % "scene_types":     完整模型 — 根据 scene_type 分组加载 rela_incre 对 par(4:5) 进行百分比平移
