@@ -2,7 +2,7 @@ close all;
 clc;
 clear;
 addpath("..\..\utils\");
-XYZ2lab
+% XYZ2lab
 %%
 wd65_64=[94.811 100.00 107.304];
 % 模特名称列表（f=女性，m=男性，数字为编号）
