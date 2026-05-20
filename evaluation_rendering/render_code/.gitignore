@@ -1,0 +1,8 @@
+# Ignore everything
+*
+
+# But not .m files
+!*.m
+
+# Track this .gitignore file
+!.gitignore
