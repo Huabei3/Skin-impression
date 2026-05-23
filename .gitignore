@@ -1,0 +1,49 @@
+# Dataset files - exclude data directory but keep code files
+data/toMax/
+data/*.tar.gz
+data/__pycache__/
+
+# Checkpoints and logs
+checkpoints/
+*.pth
+*.pt
+train.log
+nohup.out
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Environment
+venv/
+env/
+ENV/
+.env
+
+# TensorBoard
+runs/
+logs/
+events.out.tfevents.*
