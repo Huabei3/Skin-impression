@@ -1,0 +1,51 @@
+# MS-CAN 可插拔模块配置
+
+# 基础配置
+model_name: 'MSCAN_v2'
+num_classes: 1
+pretrained: true
+
+# 模块开关
+modules:
+  # ① 肤色区域注意力
+  skin_region_attention:
+    enabled: true
+    method: 'hsv_threshold'  # 'hsv_threshold' or 'face_parsing'
+
+  # ② 色彩空间多分支
+  color_space_branches:
+    enabled: true
+    branches:
+      - 'rgb'
+      - 'lab'
+      # - 'hsv'  # 可选
+    fusion_method: 'concat'  # 'concat' or 'add' or 'attention'
+
+  # ③ 肤色统计特征
+  skin_statistics:
+    enabled: true
+    feature_dim: 64
+
+  # ⑤ 多任务学习
+  multi_task:
+    enabled: true
+    tasks:
+      preference_score:
+        enabled: true
+        weight: 1.0
+      preference_center:
+        enabled: true
+        weight: 0.5
+        output_dim: 3  # L*a*b*
+
+  # ⑥ 肤色渲染（推理时使用）
+  skin_rendering:
+    enabled: false  # 训练时关闭，推理时开启
+
+# 训练配置
+training:
+  batch_size: 32
+  epochs: 100
+  lr: 1e-4
+  num_workers: 8
+  data_root: 'data/toMax'

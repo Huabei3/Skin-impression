@@ -1,0 +1,16 @@
+# 实验1: 只开启肤色区域注意力
+model_name: 'MSCAN_skin_attn'
+modules:
+  skin_region_attention:
+    enabled: true
+    method: 'hsv_threshold'
+  color_space_branches:
+    enabled: false
+  skin_statistics:
+    enabled: false
+  multi_task:
+    enabled: false
+training:
+  batch_size: 32
+  epochs: 100
+  lr: 1e-4
