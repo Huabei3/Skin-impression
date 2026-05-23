@@ -1,0 +1,8 @@
+=== Group-wise Ranking Analysis Summary ===
+Total groups: 21
+Total images: 693
+Mean Spearman correlation: -0.0672
+Overall Pearson correlation: -0.0508
+
+Prediction range: [3.248, 3.440]
+Ground truth range: [0.000, 1.000]
