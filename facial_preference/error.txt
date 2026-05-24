@@ -1,0 +1,32 @@
+Traceback (most recent call last):
+  File "d:\max\deepskin\facial_preference\train.py", line 659, in <module>
+    main()
+  File "d:\max\deepskin\facial_preference\train.py", line 652, in main
+    trainer.train()
+  File "d:\max\deepskin\facial_preference\train.py", line 525, in train
+    val_metrics = self.validate()
+                  ^^^^^^^^^^^^^^^
+  File "d:\max\deepskin\facial_preference\train.py", line 488, in validate
+    eval_metrics = evaluate_model(
+                   ^^^^^^^^^^^^^^^
+  File "d:\max\deepskin\facial_preference\utils\metrics.py", line 127, in evaluate_model
+    mae_score = mean_absolute_error(target_scores, pred_scores)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Windows11\AppData\Local\Programs\Python\Python311\Lib\site-packages\sklearn\utils\_param_validation.py", line 218, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Windows11\AppData\Local\Programs\Python\Python311\Lib\site-packages\sklearn\metrics\_regression.py", line 284, in mean_absolute_error
+    _check_reg_targets_with_floating_dtype(
+  File "C:\Users\Windows11\AppData\Local\Programs\Python\Python311\Lib\site-packages\sklearn\metrics\_regression.py", line 209, in _check_reg_targets_with_floating_dtype
+    y_type, y_true, y_pred, sample_weight, multioutput = _check_reg_targets(
+                                                         ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Windows11\AppData\Local\Programs\Python\Python311\Lib\site-packages\sklearn\metrics\_regression.py", line 116, in _check_reg_targets
+    y_pred = check_array(y_pred, ensure_2d=False, dtype=dtype)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Windows11\AppData\Local\Programs\Python\Python311\Lib\site-packages\sklearn\utils\validation.py", line 1105, in check_array
+    _assert_all_finite(
+  File "C:\Users\Windows11\AppData\Local\Programs\Python\Python311\Lib\site-packages\sklearn\utils\validation.py", line 120, in _assert_all_finite
+    _assert_all_finite_element_wise(
+  File "C:\Users\Windows11\AppData\Local\Programs\Python\Python311\Lib\site-packages\sklearn\utils\validation.py", line 169, in _assert_all_finite_element_wise
+    raise ValueError(msg_err)
+ValueError: Input contains NaN.
