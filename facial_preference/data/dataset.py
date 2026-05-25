@@ -5,6 +5,8 @@ import os
 import re
 import hashlib
 import numpy as np
+import pickle
+import io
 import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -667,7 +669,23 @@ class FacialPreferenceDataset(Dataset):
         face_uv = None
         if self.load_uv:
             # 加载UV数据
-            face_uv = np.load(data_item['face_uv_path'])
+            # 尝试加载UV数据，处理可能的编码问题
+            try:
+                face_uv = np.load(data_item['face_uv_path'])
+            except (ValueError, UnicodeDecodeError, pickle.UnpicklingError):
+                # 如果标准加载失败，尝试直接读取二进制数据
+                with open(data_item['face_uv_path'], 'rb') as f:
+                    # 跳过可能损坏的文件头
+                    data = f.read()
+                    # 查找NUMPY标记
+                    numpy_idx = data.find(b'NUMPY')
+                    if numpy_idx > 0:
+                        # 重新构造正确的npy文件头
+                        import io
+                        corrected_data = bytes([0x93]) + data[numpy_idx:]
+                        face_uv = np.load(io.BytesIO(corrected_data))
+                    else:
+                        raise ValueError(f"Cannot load UV file: {data_item['face_uv_path']}")
             face_uv = torch.from_numpy(face_uv).float()
 
             # 确保UV数据是正确的形状 (C, H, W)

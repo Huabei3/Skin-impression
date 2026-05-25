@@ -9,21 +9,25 @@ class Config:
     
     # ==================== 数据路径配置 ====================
     # 人脸RGB图像根目�?
-    FACE_RGB_ROOT = Path(r"I:\skin_data_2max\rendered_face")
+    FACE_RGB_ROOT = Path(r"/root/autodl-tmp/toMax_deepskin/rendered_face")
     
     # 人脸UV数据根目�? 
-    FACE_UV_ROOT = Path(r"I:\skin_data_2max\rendered_face_uv")
+    FACE_UV_ROOT = Path(r"/root/autodl-tmp/toMax_deepskin/rendered_face_uv")
     
     # GT Excel文件路径
-    GT_EXCEL_PATH = Path(r"I:\skin_data_2max\gt\Healthy_non_model_gt.xlsx")
+    GT_EXCEL_PATH = Path(r"/root/autodl-tmp/toMax_deepskin/gt/toMax_gt.xlsx")
     
     TRAIN_IDS = ["01"]
     TEST_IDS =["01"]
 
     # 输出目录
     # 可通过修改 MODEL_NAME 来区分不同模型的保存目录
-    GLOBAL_RGB_ROOT =Path(r"I:\skin_data_2max\rendered_2max")
-    OUTPUT_ROOT = Path(r"F:\Github\deepskin\facial_preference\output")
+    GLOBAL_RGB_ROOT =Path(r"/root/autodl-tmp/toMax_deepskin/rendered_2max")
+    # GLOBAL_RGB_ROOT =Path(r"I:\skin_data_2max\rendered_2max")
+
+    OUTPUT_ROOT = Path(r"/root/autodl-tmp/deepskin/facial_preference/output")
+    # GLOBAL_RGB_ROOT =Path(r"I:\skin_data_2max\rendered_2max")
+    # OUTPUT_ROOT = Path(r"F:\Github\deepskin\facial_preference\output")
     MODEL_NAME = "test"  # 修改为你希望的模型名�?
     OUTPUT_DIR = OUTPUT_ROOT / MODEL_NAME
     CHECKPOINT_DIR = OUTPUT_DIR / "checkpoints"
@@ -133,7 +137,7 @@ class Config:
         
         # 训练配置
         'batch_size': 32,
-        'num_epochs': 1000,
+        'num_epochs': 100,
         'gradient_clip': 1.0,
         'early_stopping_patience': 100,
         

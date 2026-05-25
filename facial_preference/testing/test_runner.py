@@ -44,11 +44,14 @@ class QuickTester:
         def _tag(ids):
             return 'all' if ids is None else '-'.join(ids)
         run_tag = f"ids_train_{_tag(train_ids)}__test_{_tag(test_ids)}"
-        candidate = Path(cfg['OUTPUT_DIR']) / 'checkpoints' / run_tag / 'best_model.pth'
+        # candidate = Path(cfg['OUTPUT_DIR']) / 'checkpoints' / run_tag / 'best_model.pth'
+        candidate = Path('/root/autodl-tmp/deepskin/pretrained_models/best_model_white_preference_V3.pth')
         if candidate.exists():
             return candidate
         # 兼容旧路径
-        return Path('F:/Github/deepskin/output/checkpoints/best_model.pth')
+        return Path('/root/autodl-tmp/deepskin/pretrained_models/best_model_white_preference_V3.pth')
+
+        # return Path('F:/Github/deepskin/output/checkpoints/best_model.pth')
 
     def run(self, output_dir: Optional[str] = None) -> Dict:
         if output_dir is None:
@@ -64,6 +67,7 @@ class QuickTester:
         logger.info("=" * 60)
 
         tester = BatchTester(
+            config=Config.get_config_dict(),
             checkpoint_path=str(self.checkpoint_path),
             device='cuda',
             output_dir=str(output_dir)
@@ -86,8 +90,8 @@ class QuickTester:
         print(f"└─ Pearson相关系数: {score['Pearson相关系数']:.4f}")
 
         print("\n【第二维度：喜好中心(a*b*) - 欧氏距离】")
-        print(f"├─ 欧氏距离平均: {center['欧氏距离_平均']:.4f}")
-        print(f"└─ Delta E平均: {center['DeltaE_平均']:.4f}")
+        print(f"├─ 欧氏距离平均: {center['欧氏距离_平均值']:.4f}")
+        print(f"└─ Delta E平均: {center['DeltaE_平均值']:.4f}")
 
         print(f"\n测试样本总数: {results['metadata']['total_samples']}")
 
@@ -128,10 +132,10 @@ class ModelComparator:
                 all_results[f"{parent_tag}/{checkpoint.name}"] = {
                     'MAE': results['score_analysis']['平均绝对误差(MAE)'],
                     '中位数误差': results['score_analysis']['中位数误差'],
-                    '欧氏距离_平均': results['center_analysis']['欧氏距离_平均'],
+                    '欧氏距离_平均值': results['center_analysis']['欧氏距离_平均值'],
                     '欧氏距离_中位': results['center_analysis']['欧氏距离_中位'],
                     'Pearson': results['score_analysis']['Pearson相关系数'],
-                    'DeltaE_平均': results['center_analysis']['DeltaE_平均'],
+                    'DeltaE_平均值': results['center_analysis']['DeltaE_平均值'],
                     '样本数': results['metadata']['total_samples']
                 }
             except Exception as e:
@@ -153,7 +157,7 @@ class ModelComparator:
         print("模型性能比较")
         print("=" * 80)
         for name, metrics in all_results.items():
-            print(f"{name:<40} MAE={metrics['MAE']:.4f} 欧氏距离={metrics['欧氏距离_平均']:.4f} Pearson={metrics['Pearson']:.4f}")
+            print(f"{name:<40} MAE={metrics['MAE']:.4f} 欧氏距离={metrics['欧氏距离_平均值']:.4f} Pearson={metrics['Pearson']:.4f}")
 
 
 def quick_test(checkpoint_path: Optional[str] = None):

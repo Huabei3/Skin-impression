@@ -15,25 +15,39 @@ class InferenceConfig:
 
     # ==================== 数据路径配置 ====================
     # 使用Z盘的数据（只读，不修改）
-    DATA_ROOT = Path(r"Z:\homes\Max\deepskin\OPPOskinExpe")
+    # inference_config.py
 
-    # 人脸RGB图像根目录
-    FACE_RGB_ROOT = DATA_ROOT / "rendered_face"
 
-    # 人脸UV数据根目录
-    FACE_UV_ROOT = DATA_ROOT / "rendered_face_uv"
+    DATA_ROOT = Path("../toMax_deepskin")
 
-    # 全局RGB图像根目录
-    GLOBAL_RGB_ROOT = DATA_ROOT / "rendered"
+    FACE_RGB_ROOT   = DATA_ROOT / "rendered_face"       # 人脸裁剪图
+    FACE_UV_ROOT    = DATA_ROOT / "rendered_face_uv"    # UV npy
+    GLOBAL_RGB_ROOT = DATA_ROOT / "rendered_2max"       # 全局原图
+    GT_EXCEL_PATH   = DATA_ROOT / "gt" / "toMax_gt.xlsx"
 
-    # GT Excel文件路径
-    GT_EXCEL_PATH = DATA_ROOT / "oppo_preference_gt.xlsx"
+    # DATA_ROOT = Path(r"Z:\homes\Max\deepskin\OPPOskinExpe")
+
+    # # 人脸RGB图像根目录
+    # FACE_RGB_ROOT = DATA_ROOT / "rendered_face"
+
+    # # 人脸UV数据根目录
+    # FACE_UV_ROOT = DATA_ROOT / "rendered_face_uv"
+
+    # # 全局RGB图像根目录
+    # GLOBAL_RGB_ROOT = DATA_ROOT / "rendered"
+
+    # # GT Excel文件路径
+    # GT_EXCEL_PATH = DATA_ROOT / "oppo_preference_gt.xlsx"
 
     # ==================== 数据集配置 ====================
     # 数据集划分比例
-    TRAIN_RATIO = 0.4
-    VAL_RATIO = 0.3
-    TEST_RATIO = 0.3
+    TRAIN_RATIO = 0.0
+    VAL_RATIO   = 0.0
+    TEST_RATIO  = 1.0
+
+    # TRAIN_RATIO = 0.4
+    # VAL_RATIO = 0.3
+    # TEST_RATIO = 0.3
 
     # 随机种子
     RANDOM_SEED = 42
