@@ -25,7 +25,7 @@ class Config:
     PROJECT_ROOT = Path(__file__).resolve().parent
     OUTPUT_ROOT = PROJECT_ROOT / "output"
     MODEL_NAME = "predict_p"
-    MODEL_VARIANT = "v3"  # "v1" original, "v2" 1ch UV hist (no face attention), "v3" RGB-only (no UV branch)
+    MODEL_VARIANT = "v1"  # "v1" original, "v2" 1ch UV hist (no face attention), "v3" RGB-only (no UV branch)
     OUTPUT_DIR = OUTPUT_ROOT / MODEL_NAME
     CHECKPOINT_DIR = OUTPUT_DIR / "checkpoints"
     LOG_DIR = OUTPUT_DIR / "logs"
@@ -38,6 +38,13 @@ class Config:
     RANDOM_SEED = 666
     SPLIT_STRATEGY = "stable_by_id_hash"
     TEST_SPLIT_SOURCE = "subset"
+    # manual_prefix 策略专用：手动指定进入 val/test 的 original_name 前缀列表
+    # 前缀格式：从 original_name（如 f08rrs02_01）去掉末尾 _数字 后缀，即 f08rrs02
+    # 示例: VALID_PREFIXES = ["f08rrs02", "f08rrs04"]
+    VALID_PREFIXES = None   # None 或 [] 表示不手动指定（回退到自动切分）
+    TEST_PREFIXES = None    # None 或 [] 表示不手动指定（回退到自动切分）
+    # 划分结果导出路径（None 不导出）
+    SPLIT_EXPORT_PATH = None  # 例如: OUTPUT_DIR / "split_result.xlsx"
 
     # ==================== Augmentation ====================
     AUGMENTATION = {

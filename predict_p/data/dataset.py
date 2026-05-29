@@ -39,7 +39,10 @@ class FacialPreferenceDataset(Dataset):
                  load_uv: bool = True,
                  uv_is_hist: bool = False,
                  uv_log_ratio: bool = False,
-                 allowed_scenes: Optional[List] = None):
+                 allowed_scenes: Optional[List] = None,
+                 valid_prefixes: Optional[List[str]] = None,
+                 test_prefixes: Optional[List[str]] = None,
+                 split_export_path: Optional[str] = None):
         """
         初始化数据集
         
@@ -53,6 +56,9 @@ class FacialPreferenceDataset(Dataset):
             train_ratio: 训练集比例
             val_ratio: 验证集比例
             test_ratio: 测试集比例
+            valid_prefixes: manual_prefix策略下进入valid的original_name前缀列表
+            test_prefixes: manual_prefix策略下进入test的original_name前缀列表
+            split_export_path: 划分结果导出xlsx路径（None不导出）
         """
         self.face_rgb_root = Path(face_rgb_root)
         self.face_uv_root = Path(face_uv_root)
@@ -64,6 +70,9 @@ class FacialPreferenceDataset(Dataset):
         self.load_uv = bool(load_uv)
         self.uv_is_hist = bool(uv_is_hist)
         self.uv_log_ratio = bool(uv_log_ratio)
+        self.valid_prefixes = self._normalize_prefixes(valid_prefixes)
+        self.test_prefixes = self._normalize_prefixes(test_prefixes)
+        self.split_export_path = split_export_path
         # 全局图根目录：默认回退到 face_rgb_root，便于兼容旧配置
         self.global_rgb_root = Path(global_rgb_root) if global_rgb_root is not None else self.face_rgb_root
         # 允许使用的编号（两位字符串，如 "01"），None 表示全部
@@ -82,6 +91,9 @@ class FacialPreferenceDataset(Dataset):
         # 如有需要，按编号过滤（基于子文件夹名/Sheet名，例如 f01i/m01r）
         if self.allowed_ids is not None:
             self._filter_by_ids()
+
+        # 保存一份全量数据副本（供 manual_prefix 导出 xlsx 使用）
+        self._all_data_items_for_export = list(self.data_items)
 
         # 数据集划分
         self._split_dataset_by_items()
@@ -153,7 +165,7 @@ class FacialPreferenceDataset(Dataset):
                 if not face_rgb_path.exists():
                     logger.warning(f"RGB file not found: {face_rgb_path}")
                     continue
-                if not face_uv_path.exists():
+                if self.load_uv and not face_uv_path.exists():
                     logger.warning(f"UV file not found: {face_uv_path}")
                     continue
                 if not global_rgb_path.exists():
@@ -225,6 +237,52 @@ class FacialPreferenceDataset(Dataset):
             if sx:
                 parts.append(sx.lower())
         return sorted(set(parts)) if parts else None
+
+    @staticmethod
+    def _load_npy_fix(path: str) -> np.ndarray:
+        """鲁棒加载 .npy 文件，兼容文件头被错误 UTF-8 编码（开头多 0xc2 字节）的情况。
+
+        正常 .npy 文件头: \\x93NUMPY
+        损坏 .npy 文件头: \\xc2\\x93NUMPY  (0x93 被错误编码为 UTF-8 双字节)
+        """
+        with open(path, 'rb') as f:
+            header = f.read(6)
+            if header == b'\x93NUMPY':
+                # 正常文件：seek 回开头，交给 numpy
+                f.seek(0)
+                return np.load(f, allow_pickle=True)
+            elif header == b'\xc2\x93NUMP':
+                # 损坏文件：跳过第一个字节，从第二个字节开始读
+                f.seek(1)
+                return np.load(f, allow_pickle=True)
+            else:
+                # 未知格式，回退到标准加载
+                f.seek(0)
+                return np.load(f, allow_pickle=True)
+
+    @staticmethod
+    def _normalize_prefixes(prefixes: Optional[List[str]]) -> Optional[set]:
+        """标准化前缀列表：None/空列表 → None，否则返回 set"""
+        if prefixes is None:
+            return None
+        if isinstance(prefixes, (list, tuple, set)):
+            cleaned = {str(p).strip() for p in prefixes if p and str(p).strip()}
+            return cleaned if cleaned else None
+        return None
+
+    @staticmethod
+    def _extract_prefix_from_original_name(original_name: str) -> str:
+        """从 original_name 提取场景前缀（去掉末尾 _数字 后缀）。
+        
+        例如: "f08rrs02_01" → "f08rrs02"
+              "f05ih3k_15" → "f05ih3k"
+              "no_underscore" → "no_underscore" (不变)
+        """
+        s = str(original_name)
+        parts = s.rsplit("_", 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            return parts[0]
+        return s
 
     @staticmethod
     def _extract_id_from_name(name: str) -> Optional[str]:
@@ -566,7 +624,170 @@ class FacialPreferenceDataset(Dataset):
             return self._split_dataset_by_items_stable_by_original_prefix()
         if strategy_raw in {"legacy", "legacy_shuffle", "shuffle"}:
             return self._split_dataset_by_items_legacy_shuffle()
+        if strategy_raw in {"manual_prefix", "manual"}:
+            return self._split_dataset_by_items_manual_prefix()
         raise ValueError(f"Unknown split_strategy: {self.split_strategy}")
+
+    def _split_dataset_by_items_manual_prefix(self) -> None:
+        """手动前缀划分策略。
+        
+        根据 VALID_PREFIXES / TEST_PREFIXES 配置，将匹配前缀的样本分配到 valid/test，
+        其余全进 train。前缀从 original_name 提取（去掉末尾 _数字）。
+        
+        导出 xlsx 到 SPLIT_EXPORT_PATH（如果配置了）。
+        """
+        valid_prefixes: Optional[set] = getattr(self, "valid_prefixes", None)
+        test_prefixes: Optional[set] = getattr(self, "test_prefixes", None)
+        export_path: Optional[str] = getattr(self, "split_export_path", None)
+        
+        # 如果没配手动前缀，回退到 stable_by_id_hash
+        if not valid_prefixes and not test_prefixes:
+            logger.info("manual_prefix: no VALID_PREFIXES/TEST_PREFIXES configured, falling back to stable_by_id_hash")
+            return self._split_dataset_by_items_stable_by_id_hash()
+        
+        n_total = len(self.data_items)
+        if n_total == 0:
+            return
+        
+        # 1) 为每个样本提取前缀并分配
+        train_idx: List[int] = []
+        val_idx: List[int] = []
+        test_idx: List[int] = []
+        
+        for idx, item in enumerate(self.data_items):
+            original_name = str(item.get("original_name", ""))
+            prefix = self._extract_prefix_from_original_name(original_name)
+            
+            # test 优先（如果一个前缀同时出现在 valid 和 test 中，进 test）
+            if test_prefixes and prefix in test_prefixes:
+                test_idx.append(idx)
+            elif valid_prefixes and prefix in valid_prefixes:
+                val_idx.append(idx)
+            else:
+                train_idx.append(idx)
+        
+        # 2) 根据当前 split 选择子集
+        if self.split == "train":
+            chosen = train_idx
+        elif self.split == "val":
+            chosen = val_idx
+        elif self.split == "test":
+            chosen = test_idx
+        else:
+            raise ValueError(f"Invalid split: {self.split}")
+        
+        # 3) 导出划分结果 xlsx（在切分 self.data_items 之前，用 _all_data_items_for_export）
+        if export_path and self.split == "train":
+            full_items = getattr(self, "_all_data_items_for_export", None)
+            if full_items is not None:
+                self._export_split_result(
+                    export_path=export_path,
+                    train_idx=train_idx,
+                    val_idx=val_idx,
+                    test_idx=test_idx,
+                    full_items=full_items,
+                )
+        
+        self.data_items = [self.data_items[i] for i in chosen]
+    
+    def _export_split_result(self, export_path: str, train_idx: List[int],
+                              val_idx: List[int], test_idx: List[int],
+                              full_items: List[Dict]) -> None:
+        """导出数据集划分结果到 xlsx 文件。
+        
+        输出列: Set | Model | iOr | Scene | original_name | scene_person
+        """
+        
+        import openpyxl as xl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        
+        wb = xl.Workbook()
+        ws = wb.active
+        ws.title = "Split Result"
+        
+        # 表头
+        headers = ["Set", "Model", "iOr", "Scene", "original_name", "scene_person"]
+        header_font = Font(bold=True, color="FFFFFF", size=11)
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        header_align = Alignment(horizontal="center", vertical="center")
+        thin_border = Border(
+            left=Side(style="thin"), right=Side(style="thin"),
+            top=Side(style="thin"), bottom=Side(style="thin"),
+        )
+        
+        for col_idx, h in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_idx, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_align
+            cell.border = thin_border
+        
+        # 颜色标记
+        train_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")  # 绿
+        val_fill = PatternFill(start_color="BDD7EE", end_color="BDD7EE", fill_type="solid")    # 蓝
+        test_fill = PatternFill(start_color="F4B4C2", end_color="F4B4C2", fill_type="solid")   # 红
+        
+        set_indices = {"train": train_idx, "val": val_idx, "test": test_idx}
+        set_fills = {"train": train_fill, "val": val_fill, "test": test_fill}
+        
+        row = 2
+        for set_name, indices in set_indices.items():
+            fill = set_fills[set_name]
+            for idx in indices:
+                item = full_items[idx]
+                sp = str(item.get("scene_person", ""))
+                oname = str(item.get("original_name", ""))
+                
+                # 解析 model, iOr, scene
+                # model: 从 scene_person 提取前3字符如 f01, m05
+                model = sp[:3] if len(sp) >= 3 else sp
+                
+                # iOr: scene_person 的第4字符
+                ior = sp[3] if len(sp) >= 4 else ""
+                
+                # scene: 从 original_name 前缀中去掉 model+ior 前缀
+                # original_name 如 f01ih3k_01 → 前缀 f01ih3k
+                prefix = self._extract_prefix_from_original_name(oname)
+                # 去掉 model+ior 部分（如 f01i），剩余即 scene
+                model_ior = model + ior
+                if prefix.startswith(model_ior):
+                    scene = prefix[len(model_ior):]
+                else:
+                    scene = prefix
+                
+                row_data = [set_name, model, ior, scene, oname, sp]
+                for col_idx, val in enumerate(row_data, 1):
+                    cell = ws.cell(row=row, column=col_idx, value=val)
+                    cell.fill = fill
+                    cell.border = thin_border
+                    cell.alignment = Alignment(vertical="center")
+                row += 1
+        
+        # 设置列宽
+        col_widths = [10, 10, 8, 14, 30, 14]
+        for col_idx, w in enumerate(col_widths, 1):
+            ws.column_dimensions[xl.utils.get_column_letter(col_idx)].width = w
+        
+        # 冻结首行
+        ws.freeze_panes = "A2"
+        
+        # 添加统计 sheet
+        ws2 = wb.create_sheet("Statistics")
+        ws2.cell(row=1, column=1, value="Set").font = header_font
+        ws2.cell(row=1, column=2, value="Count").font = header_font
+        for r, (set_name, indices) in enumerate(set_indices.items(), 2):
+            ws2.cell(row=r, column=1, value=set_name)
+            ws2.cell(row=r, column=2, value=len(indices))
+        ws2.cell(row=5, column=1, value="Total").font = Font(bold=True)
+        ws2.cell(row=5, column=2, value=sum(len(v) for v in set_indices.values()))
+        ws2.column_dimensions["A"].width = 12
+        ws2.column_dimensions["B"].width = 10
+        
+        # 确保目录存在
+        Path(export_path).parent.mkdir(parents=True, exist_ok=True)
+        wb.save(export_path)
+        logger.info(f"Split result exported to: {export_path}")
+        logger.info(f"  train={len(train_idx)}, val={len(val_idx)}, test={len(test_idx)}")
 
     def __len__(self) -> int:
         """返回数据集大小"""
@@ -667,7 +888,7 @@ class FacialPreferenceDataset(Dataset):
         face_uv = None
         if self.load_uv:
             # 加载UV数据
-            face_uv = np.load(data_item['face_uv_path'])
+            face_uv = self._load_npy_fix(data_item['face_uv_path'])
             face_uv = torch.from_numpy(face_uv).float()
 
             # 确保UV数据是正确的形状 (C, H, W)
@@ -792,6 +1013,11 @@ def create_data_loaders(config: Dict) -> Tuple[DataLoader, DataLoader, DataLoade
     batch_size = config['TRAINING']['batch_size']
     split_strategy = config.get("SPLIT_STRATEGY", "stable_by_id_hash")
     allowed_scenes = config.get("SCENES", None)
+    
+    # manual_prefix 策略专用配置
+    valid_prefixes = config.get("VALID_PREFIXES", None)
+    test_prefixes = config.get("TEST_PREFIXES", None)
+    split_export_path = config.get("SPLIT_EXPORT_PATH", None)
 
     # v3 is RGB-only, skip loading UV to reduce CPU/I/O overhead.
     model_variant = str(config.get("MODEL_VARIANT", "v1")).lower().strip()
@@ -820,6 +1046,11 @@ def create_data_loaders(config: Dict) -> Tuple[DataLoader, DataLoader, DataLoade
     test_transform = get_data_transforms(config, 'test')
     
     # 创建数据集
+    # manual_prefix 策略下：如果配置了 TRAIN_IDS（如按人种过滤），保留用于编号范围限制；
+    # 前缀已精确控制 train/val/test 分配，编号过滤只用于限定数据范围
+    _train_ids = norm_train_ids
+    _test_ids = norm_test_ids
+    
     train_dataset = FacialPreferenceDataset(
         face_rgb_root=face_rgb_root,
         face_uv_root=face_uv_root,
@@ -830,13 +1061,16 @@ def create_data_loaders(config: Dict) -> Tuple[DataLoader, DataLoader, DataLoade
         train_ratio=train_ratio,
         val_ratio=val_ratio,
         test_ratio=test_ratio,
-        allowed_ids=norm_train_ids,
+        allowed_ids=_train_ids,
         global_rgb_root=global_rgb_root,
         split_strategy=split_strategy,
         load_uv=load_uv,
         uv_is_hist=uv_is_hist,
         uv_log_ratio=uv_log_ratio,
         allowed_scenes=allowed_scenes,
+        valid_prefixes=valid_prefixes,
+        test_prefixes=test_prefixes,
+        split_export_path=split_export_path,  # 只在 train 时导出
     )
     
     val_dataset = FacialPreferenceDataset(
@@ -849,13 +1083,16 @@ def create_data_loaders(config: Dict) -> Tuple[DataLoader, DataLoader, DataLoade
         train_ratio=train_ratio,
         val_ratio=val_ratio,
         test_ratio=test_ratio,
-        allowed_ids=norm_train_ids,
+        allowed_ids=_train_ids,
         global_rgb_root=global_rgb_root,
         split_strategy=split_strategy,
         load_uv=load_uv,
         uv_is_hist=uv_is_hist,
         uv_log_ratio=uv_log_ratio,
         allowed_scenes=allowed_scenes,
+        valid_prefixes=valid_prefixes,
+        test_prefixes=test_prefixes,
+        split_export_path=None,  # 不重复导出
     )
     
     test_dataset = FacialPreferenceDataset(
@@ -868,13 +1105,16 @@ def create_data_loaders(config: Dict) -> Tuple[DataLoader, DataLoader, DataLoade
         train_ratio=train_ratio,
         val_ratio=val_ratio,
         test_ratio=test_ratio,
-        allowed_ids=norm_test_ids,
+        allowed_ids=_test_ids,
         global_rgb_root=global_rgb_root,
         split_strategy=split_strategy,
         load_uv=load_uv,
         uv_is_hist=uv_is_hist,
         uv_log_ratio=uv_log_ratio,
         allowed_scenes=allowed_scenes,
+        valid_prefixes=valid_prefixes,
+        test_prefixes=test_prefixes,
+        split_export_path=None,  # 不重复导出
     )
     
     # 创建数据加载器

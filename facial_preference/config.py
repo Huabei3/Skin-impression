@@ -9,26 +9,36 @@ class Config:
     
     # ==================== 数据路径配置 ====================
     # 人脸RGB图像根目�?
-    FACE_RGB_ROOT = Path(r"/root/autodl-tmp/toMax_deepskin/rendered_face")
+    FACE_RGB_ROOT = Path(r"/root/autodl-tmp/toMax/rendered_face")
     
     # 人脸UV数据根目�? 
-    FACE_UV_ROOT = Path(r"/root/autodl-tmp/toMax_deepskin/rendered_face_uv")
+    FACE_UV_ROOT = Path(r"/root/autodl-tmp/toMax/rendered_face_uv")
     
     # GT Excel文件路径
-    GT_EXCEL_PATH = Path(r"/root/autodl-tmp/toMax_deepskin/gt/toMax_gt.xlsx")
+    GT_EXCEL_PATH = Path(r"/root/autodl-tmp/toMax/gt/toMax_gt.xlsx")
     
-    TRAIN_IDS = ["01"]
-    TEST_IDS =["01"]
+    TRAIN_IDS = ["01", "02"]
+    TEST_IDS = ["03"]
+    # Scene configuration for toMax dataset
+    # Training scenes: f01i, f02i, f03i, m01i (m02i is incomplete due to disk space)
+    # Validation scenes: f01r, f02r (using 'r' variants for validation)
+    TRAIN_SCENES = ['f01i', 'f02i', 'f03i', 'm01i']
+    VAL_SCENES = ['f01r', 'f02r']
+    TEST_SCENES = ['f03r', 'm01r']
+    
+    # For backward compatibility, also set SCENES to include all training scenes
+    SCENES = TRAIN_SCENES
+
 
     # 输出目录
     # 可通过修改 MODEL_NAME 来区分不同模型的保存目录
-    GLOBAL_RGB_ROOT =Path(r"/root/autodl-tmp/toMax_deepskin/rendered_2max")
-    # GLOBAL_RGB_ROOT =Path(r"I:\skin_data_2max\rendered_2max")
+    GLOBAL_RGB_ROOT = Path(r"/root/autodl-tmp/toMax/rendered_2max")
+    # GLOBAL_RGB_ROOT = Path(r"/root/autodl-tmp/toMax/rendered_2max")
 
     OUTPUT_ROOT = Path(r"/root/autodl-tmp/deepskin/facial_preference/output")
-    # GLOBAL_RGB_ROOT =Path(r"I:\skin_data_2max\rendered_2max")
+    # GLOBAL_RGB_ROOT = Path(r"/root/autodl-tmp/toMax/rendered_2max")
     # OUTPUT_ROOT = Path(r"F:\Github\deepskin\facial_preference\output")
-    MODEL_NAME = "test"  # 修改为你希望的模型名�?
+    MODEL_NAME = "caucasian_f01f02f03m01"  # 修改为你希望的模型名�?
     OUTPUT_DIR = OUTPUT_ROOT / MODEL_NAME
     CHECKPOINT_DIR = OUTPUT_DIR / "checkpoints"
     LOG_DIR = OUTPUT_DIR / "logs"

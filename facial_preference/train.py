@@ -553,7 +553,7 @@ class Trainer:
             logger.info(f"Val Pref Mean: {val_metrics['val_pref_mean']:.4f}")
             logger.info(f"Val Pearson: {val_metrics['pearson']:.4f}")
             logger.info(f"Val Delta E: {val_metrics['delta_e_mean']:.4f}")
-            
+
             # 记录到TensorBoard
             if self.writer:
                 self.writer.add_scalars('Loss', {
@@ -649,7 +649,16 @@ class Trainer:
         logger.info(f"R²: {test_metrics['r2']:.4f}")
         logger.info(f"Delta E (mean): {test_metrics['delta_e_mean']:.4f}")
         logger.info(f"Delta E (90%): {test_metrics['delta_e_90']:.4f}")
-        
+        # 同时print到控制台
+        print("\n=== Test Results ===")
+        print(f"Test Loss: {test_metrics['val_loss']:.4f}")
+        print(f"MAE (score): {test_metrics['mae_score']:.4f}")
+        print(f"RMSE (score): {test_metrics['rmse_score']:.4f}")
+        print(f"Pearson: {test_metrics['pearson']:.4f}")
+        print(f"Spearman: {test_metrics['spearman']:.4f}")
+        print(f"R²: {test_metrics['r2']:.4f}")
+        print(f"Delta E (mean): {test_metrics['delta_e_mean']:.4f}")
+        print(f"Delta E (90%): {test_metrics['delta_e_90']:.4f}")
         return test_metrics
 
 
