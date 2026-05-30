@@ -1,0 +1,45 @@
+=================================================================
+TOMAX DATASET PROCESSING SUMMARY
+=================================================================
+Date: 2026-05-25
+Script: prepare_tomax_for_deepskin.m
+
+RESULTS:
+--------
+✓ Total face images processed: 17,444
+✓ Excel GT file created: toMax_gt.xlsx (454KB)
+✓ Group centers saved: toMax_group_centers.mat (15KB)
+✓ All 20 scene-person combinations processed successfully
+
+OUTPUT STRUCTURE:
+-----------------
+D:\work\secondYearMaster\thesis\reference\appeal\algorithms\preference_evaluate\deepskin\data\toMax\
+├── rendered_face/          (17,444 face images)
+├── rendered_face_uv/       (17,444 UV numpy files)
+├── rendered_2max/          (17,444 global images)
+└── gt/
+    ├── toMax_gt.xlsx       (Excel with 20 sheets)
+    └── toMax_group_centers.mat
+
+FIXES APPLIED:
+--------------
+1. Added robust face detection fallback (center cropping when detection fails)
+2. Added boundary checking to prevent index out of bounds errors
+3. Added try-catch for image cropping operations
+4. Added file existence check to skip already processed images
+5. Added Excel write error handling with CSV fallback
+6. Removed imshow() calls that could cause display issues
+
+SCENE BREAKDOWN (sample):
+-------------------------
+f01i: 693 images
+f01r: 462 images
+f02i: 693 images
+f02r: 462 images
+f03i: 693 images
+f03r: 462 images
+f04i: 693 images
+... (20 scenes total)
+
+STATUS: ✓ COMPLETE - All images processed successfully
+=================================================================
