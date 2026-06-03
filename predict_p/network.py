@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 
 from .face_stream import AttentiveFaceStream, FaceStream, FaceStreamV2, FaceStreamV3
-from .fusion import TwoStreamFusion, SimpleConcatFusion
+from .fusion import TwoStreamFusion
 from .global_stream import GlobalStream
 from .heads import ScoreHead, MultiScoreHead
 
@@ -18,10 +18,6 @@ class PredictPNetwork(nn.Module):
 Outputs:
   - score_logits: (B, 1)       (single-head)
   - score_logits: (B, num_heads) (multi-head, when MULTI_HEAD=True)
-
-Ablation 参数:
-  - use_face_only:  True → 仅用 FaceStream，跳过 GlobalStream + Fusion (Ablation-1)
-  - fusion_type:    "gated" (默认) 或 "concat" (Ablation-2)
 """
 
     def __init__(
@@ -31,16 +27,12 @@ Ablation 参数:
         model_variant: str = "v1",
         multi_head: bool = False,
         attribute_names: Optional[List[str]] = None,
-        use_face_only: bool = False,
-        fusion_type: str = "gated",
     ) -> None:
         super().__init__()
         self.config = config
         self.use_attention = use_attention
         self.model_variant = str(model_variant).lower().strip()
         self.multi_head = bool(multi_head)
-        self.use_face_only = bool(use_face_only)
-        self.fusion_type = str(fusion_type).lower().strip()
 
         if self.model_variant == "v1":
             if use_attention:
@@ -53,49 +45,31 @@ Ablation 参数:
             self.face_stream = FaceStreamV3(config)
         else:
             raise ValueError(f"Unsupported model_variant for predict_p: {self.model_variant!r}")
+        self.global_stream = GlobalStream(config)
 
         fusion_cfg = config["MODEL"]["fusion"]
         fusion_dim = int(fusion_cfg["fusion_dim"])
         dropout = float(fusion_cfg.get("dropout", 0.3))
-
-        # Ablation-1: face-only 模式，不创建 global_stream 和 fusion
-        if self.use_face_only:
-            self.global_stream = None
-            self.fusion = None
-            # face-only 时 head 输入维度 = face_stream 输出维度
-            head_input_dim = self.face_stream.output_dim
-        else:
-            self.global_stream = GlobalStream(config)
-            # Ablation-2: 选择 fusion 类型
-            if self.fusion_type == "concat":
-                self.fusion = SimpleConcatFusion(
-                    face_dim=self.face_stream.output_dim,
-                    global_dim=self.global_stream.output_dim,
-                    fusion_dim=fusion_dim,
-                    dropout=dropout,
-                )
-            else:
-                self.fusion = TwoStreamFusion(
-                    face_dim=self.face_stream.output_dim,
-                    global_dim=self.global_stream.output_dim,
-                    fusion_dim=fusion_dim,
-                    dropout=dropout,
-                )
-            head_input_dim = fusion_dim
+        self.fusion = TwoStreamFusion(
+            face_dim=self.face_stream.output_dim,
+            global_dim=self.global_stream.output_dim,
+            fusion_dim=fusion_dim,
+            dropout=dropout,
+        )
 
         head_cfg = config["MODEL"]["prediction_heads"]["preference_score"]
         hidden_dims = list(head_cfg.get("hidden_dims", [128, 64]))
 
         if self.multi_head and attribute_names:
             self.score_head = MultiScoreHead(
-                input_dim=head_input_dim,
+                input_dim=fusion_dim,
                 hidden_dims=hidden_dims,
                 attribute_names=list(attribute_names),
             )
             self._attribute_names = list(attribute_names)
         else:
             self.score_head = ScoreHead(
-                input_dim=head_input_dim,
+                input_dim=fusion_dim,
                 hidden_dims=hidden_dims,
                 output_dim=int(head_cfg.get("output_dim", 1)),
             )
@@ -142,8 +116,6 @@ Ablation 参数:
         Returns:
             (B, 1)  if single-head
             (B, N)  if multi-head (N = len(attribute_names))
-
-        Ablation-1 (use_face_only=True): 跳过 GlobalStream + Fusion，face_feat 直连 head
         """
         if self.model_variant == "v3":
             face_features = self.face_stream(face_rgb)
@@ -151,11 +123,6 @@ Ablation 参数:
             if face_uv is None:
                 raise ValueError(f"face_uv is required for model_variant={self.model_variant!r}")
             face_features = self.face_stream(face_rgb, face_uv)
-
-        # Ablation-1: face-only
-        if self.use_face_only:
-            return self.score_head(face_features)
-
         global_features = self.global_stream(global_rgb if global_rgb is not None else face_rgb)
         fused = self.fusion(face_features, global_features)
         return self.score_head(fused)
@@ -180,14 +147,10 @@ def create_model(
         raise ValueError(f"Unsupported model_type for predict_p: {model_type}")
     multi_head = bool(config.get("MULTI_HEAD", False))
     attribute_names = config.get("ATTRIBUTE_HEAD_NAMES", None) or None
-    use_face_only = bool(config.get("ABLATION_FACE_ONLY", False))
-    fusion_type = str(config.get("ABLATION_FUSION_TYPE", "gated")).lower().strip()
     return PredictPNetwork(
         config,
         use_attention=use_attention,
         model_variant=model_variant,
         multi_head=multi_head,
         attribute_names=attribute_names,
-        use_face_only=use_face_only,
-        fusion_type=fusion_type,
     )

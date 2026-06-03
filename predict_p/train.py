@@ -129,7 +129,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--global-backbone",
-        choices=["simple_cnn", "mobilenet_v3_small", "mobilenet_v3_large", "efficientnet_b0"],
+        choices=["simple_cnn", "resnet50", "mobilenet_v3_small", "mobilenet_v3_large", "efficientnet_b0"],
         default=None,
         help="Global image backbone",
     )
@@ -184,6 +184,79 @@ def main() -> None:
         default=None,
         help="Override output root directory (e.g., /root/autodl-tmp/deepskin/predict_p/output)",
     )
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Resume training from a checkpoint file (e.g., /path/to/best_model.pth). "
+             "Loads model weights, optimizer/scheduler states, and continues from the saved epoch.",
+    )
+    parser.add_argument(
+        "--reset-feminine-head",
+        action="store_true",
+        default=False,
+        help="When resuming with --resume, reset the Feminine (03Feminine) head weights to random init "
+             "while keeping all other heads and backbone intact. Use this when Feminine GT was previously "
+             "missing and fell back to 0.5, corrupting the Feminine head.",
+    )
+    parser.add_argument(
+        "--nan-handling",
+        type=str,
+        default="fallback_0.5",
+        choices=["fallback_0.5", "skip_sample", "loss_mask"],
+        help="How to handle NaN GT values in multi-attribute mode. "
+             "fallback_0.5: replace NaN with 0.5 (default, keeps sample). "
+             "skip_sample: drop the entire sample if any attribute is NaN. "
+             "loss_mask: mask NaN positions in loss (keeps sample, excludes NaN heads from gradient).",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Override batch_size in TRAINING config (useful for OOM with large backbones)",
+    )
+    # ========== Ablation 参数 ==========
+    parser.add_argument(
+        "--ablation-face-only",
+        action="store_true",
+        default=False,
+        help="Ablation-1: Remove GlobalStream, face features go directly to head.",
+    )
+    parser.add_argument(
+        "--ablation-fusion-type",
+        type=str,
+        choices=["gated", "concat"],
+        default=None,
+        help="Ablation-2: Fusion type. 'gated' (default) or 'concat' (simple concat + MLP).",
+    )
+    # Ablation-3: 直接用 --rgb-backbone resnet50 --global-backbone resnet50，无需额外参数
+    # ===================================
+    parser.add_argument(
+        "--exp-name",
+        type=str,
+        default=None,
+        help="Experiment sub-directory name under OUTPUT_ROOT. "
+             "E.g., 'multi_head' -> checkpoints saved to OUTPUT_ROOT/multi_head/predict_p_SA/checkpoints/",
+    )
+    parser.add_argument(
+        "--multi-head",
+        action="store_true",
+        default=False,
+        help="Enable multi-head mode: parallel ScoreHeads sharing feature extractor.",
+    )
+    parser.add_argument(
+        "--attributes",
+        type=str,
+        default=None,
+        help="Comma-separated attribute serials to train (e.g., '01Preference,02Attractiveness,03Feminine'). "
+             "Use 'all' for all 10 attributes. Only effective when --multi-head is set.",
+    )
+    parser.add_argument(
+        "--attribute-gt-dir",
+        type=str,
+        default=None,
+        help="Directory containing toMax_gt_*.xlsx files for multi-head training.",
+    )
     args = parser.parse_args()
 
     config = Config.get_config_dict()
@@ -213,6 +286,21 @@ def main() -> None:
     if bool(args.no_pretrained):
         config["MODEL"]["face_stream"]["rgb_pretrained"] = False
         config["MODEL"]["global_stream"]["pretrained"] = False
+    if args.batch_size is not None:
+        config["TRAINING"]["batch_size"] = int(args.batch_size)
+
+    # ========== Ablation 配置覆盖 ==========
+    if bool(args.ablation_face_only):
+        config["ABLATION_FACE_ONLY"] = True
+    if args.ablation_fusion_type is not None:
+        config["ABLATION_FUSION_TYPE"] = str(args.ablation_fusion_type)
+    # Ablation-3: --rgb-backbone resnet50 + --global-backbone resnet50 自动启用 pretrained
+    if args.rgb_backbone == "resnet50" or args.global_backbone == "resnet50":
+        # resnet50 默认用 pretrained=True（除非显式指定 --no-pretrained）
+        if not bool(args.no_pretrained):
+            config["MODEL"]["face_stream"]["rgb_pretrained"] = True
+            config["MODEL"]["global_stream"]["pretrained"] = True
+    # ======================================
 
     if "DATALOADER" not in config or not isinstance(config["DATALOADER"], dict):
         config["DATALOADER"] = {}
@@ -224,10 +312,49 @@ def main() -> None:
         config["DATALOADER"]["persistent_workers"] = True
     _apply_model_variant_overrides(config)
 
+    # ========== 实验子目录 ==========
+    # 如果指定了 --exp-name，将 OUTPUT_ROOT 改为 OUTPUT_ROOT/<exp_name>
+    # 这样后续 race overrides 会在子目录下创建 predict_p_{RACE}/checkpoints/
+    if args.exp_name is not None:
+        exp_name = str(args.exp_name).strip()
+        if exp_name:
+            config["OUTPUT_ROOT"] = str(Path(config["OUTPUT_ROOT"]) / exp_name)
+    # ================================
+
     # ========== 人种分组训练覆盖 ==========
     if args.race is not None:
         _apply_race_overrides(config, args.race)
     # =====================================
+
+    # ========== 多属性 head 配置 ==========
+    if bool(args.multi_head):
+        config["MULTI_HEAD"] = True
+        # 默认全部 10 个属性
+        _ALL_ATTRIBUTES = [
+            "01Preference", "02Attractiveness", "03Feminine",
+            "04Cooperative", "05Youth", "06Healthy",
+            "07Fidelity", "08Harmony", "09Fair", "10Ruddy",
+        ]
+        if args.attributes is None or str(args.attributes).strip().lower() == "all":
+            config["ATTRIBUTE_HEAD_NAMES"] = list(_ALL_ATTRIBUTES)
+        else:
+            selected = [s.strip() for s in str(args.attributes).split(",") if s.strip()]
+            # 验证合法性
+            valid_set = set(_ALL_ATTRIBUTES)
+            for name in selected:
+                if name not in valid_set:
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"Unknown attribute: {name}, valid: {_ALL_ATTRIBUTES}")
+            config["ATTRIBUTE_HEAD_NAMES"] = [n for n in selected if n in valid_set]
+
+        if args.attribute_gt_dir is not None:
+            config["ATTRIBUTE_GT_DIR"] = str(Path(args.attribute_gt_dir))
+        elif args.data_root is not None:
+            config["ATTRIBUTE_GT_DIR"] = str(Path(args.data_root) / "gt")
+        else:
+            config["ATTRIBUTE_GT_DIR"] = str(Path(config["GT_EXCEL_PATH"]).parent)
+    config["NAN_HANDLING"] = args.nan_handling
+    # ======================================
 
     log_level_name = str(config.get("LOGGING", {}).get("level", "INFO")).upper()
     log_level = getattr(logging, log_level_name, logging.INFO)
@@ -238,7 +365,8 @@ def main() -> None:
     if torch.cuda.is_available():
         torch.cuda.manual_seed(config["RANDOM_SEED"])
 
-    trainer = Trainer(config)
+    resume_path = str(Path(args.resume)) if args.resume else None
+    trainer = Trainer(config, resume_path=resume_path, reset_feminine_head=args.reset_feminine_head)
     trainer.train()
     trainer.test()
 

@@ -26,7 +26,11 @@ class GlobalStream(nn.Module):
             self.feature_projector = nn.Identity()
             self.output_dim = feat_dim
             return
-        if backbone_name == "mobilenet_v3_small":
+        if backbone_name == "resnet50":
+            net = models.resnet50(pretrained=pretrained)
+            in_features = net.fc.in_features
+            self.backbone = nn.Sequential(*list(net.children())[:-1])
+        elif backbone_name == "mobilenet_v3_small":
             self.backbone = models.mobilenet_v3_small(pretrained=pretrained)
             in_features = self.backbone.classifier[0].in_features
             self.backbone.classifier = nn.Identity()

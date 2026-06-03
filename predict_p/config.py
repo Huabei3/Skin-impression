@@ -31,6 +31,24 @@ class Config:
     LOG_DIR = OUTPUT_DIR / "logs"
     RESULT_DIR = OUTPUT_DIR / "results"
 
+    # ==================== Ablation ====================
+    # Ablation-1: Face-Only（去掉 GlobalStream，face_feat 直连 head）
+    ABLATION_FACE_ONLY = False
+    # Ablation-2: SimpleConcat（门控融合 → 简单 concat + MLP）
+    # 可选值: "gated" (默认) / "concat"
+    ABLATION_FUSION_TYPE = "gated"
+    # Ablation-3: ResNet50 Backbone（通过 CLI --rgb-backbone resnet50 --global-backbone resnet50 控制）
+    #            不需要额外 config 参数
+
+    # ==================== Multi-Head ====================
+    # 设为 True 开启多属性 head 模式（并联多个 ScoreHead，共享特征提取器）
+    MULTI_HEAD = False
+    # 多属性 head 名称列表（与 GT xlsx 文件名中的 attribute_serial 对应）
+    # 例如: ["01Preference", "02Attractiveness", "03Feminine", ...]
+    ATTRIBUTE_HEAD_NAMES = None  # None 或 [] 表示回退到单 head
+    # 多属性 GT 文件目录（存放 toMax_gt_*.xlsx 的文件夹路径）
+    ATTRIBUTE_GT_DIR = None  # 例如: Path("/root/autodl-tmp/gt")
+
     # ==================== Dataset split ====================
     TRAIN_RATIO = 0.7
     VAL_RATIO = 0.15
@@ -77,7 +95,7 @@ class Config:
             "uv_conv_layers": [32, 64, 128, 128],
         },
         "global_stream": {
-            "backbone": "simple_cnn",  # "simple_cnn"/"mobilenet_v3_small"/"mobilenet_v3_large"/"efficientnet_b0"
+            "backbone": "simple_cnn",  # "simple_cnn"/"resnet50"/"mobilenet_v3_small"/"mobilenet_v3_large"/"efficientnet_b0"
             "pretrained": False,  # only applies to torchvision backbones
             "feature_dim": 256,
         },

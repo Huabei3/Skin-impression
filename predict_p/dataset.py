@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
-from torch.utils.data.dataloader import default_collate
 from PIL import Image
 import torchvision.transforms as transforms
 import torchvision.transforms.functional as F
@@ -44,8 +43,7 @@ class FacialPreferenceDataset(Dataset):
                  valid_prefixes: Optional[List[str]] = None,
                  test_prefixes: Optional[List[str]] = None,
                  split_export_path: Optional[str] = None,
-                 attribute_gt_paths: Optional[Dict[str, Path]] = None,
-                 nan_handling: str = "fallback_0.5"):
+                 attribute_gt_paths: Optional[Dict[str, Path]] = None):
         """
         初始化数据集
         
@@ -65,10 +63,6 @@ class FacialPreferenceDataset(Dataset):
             attribute_gt_paths: 多属性 GT 文件路径字典，key=属性名, value=Path。
                                例如: {"02Attractiveness": Path(".../toMax_gt_02Attractiveness.xlsx"), ...}
                                仅在 multi_head 模式下使用；None 表示单 head 模式。
-            nan_handling: 多属性 GT 缺失时的处理策略。
-                          - "fallback_0.5": 缺失属性填 0.5，样本保留（默认）
-                          - "skip_sample": 任意属性缺失 → 丢弃整个样本
-                          - "loss_mask": 缺失属性填 0.0，输出 valid_mask，loss 中忽略 NaN 位置
         """
         self.face_rgb_root = Path(face_rgb_root)
         self.face_uv_root = Path(face_uv_root)
@@ -92,7 +86,6 @@ class FacialPreferenceDataset(Dataset):
         
         # 多属性 GT 路径
         self.attribute_gt_paths = attribute_gt_paths or {}
-        self.nan_handling = nan_handling  # fallback_0.5 | skip_sample | loss_mask
         self._attribute_gt_caches: Dict[str, Dict] = {}  # lazy cache: {attr_name: {original_name: score}}
         
         # 设置数据集划分比例
@@ -1002,36 +995,16 @@ class FacialPreferenceDataset(Dataset):
         if self.attribute_gt_paths:
             original_name = str(data_item.get("original_name", ""))
             attr_scores = []
-            attr_mask = []
             for attr_name in sorted(self.attribute_gt_paths.keys()):
                 lookup = self._load_attribute_gt(attr_name)
                 val = lookup.get(original_name, float("nan"))
                 if not np.isfinite(val):
-                    if self.nan_handling == "skip_sample":
-                        return None  # GT 缺失，跳过该样本
-                    elif self.nan_handling == "loss_mask":
-                        val = 0.0
-                        attr_mask.append(0.0)
-                    else:  # fallback_0.5 (default)
-                        val = 0.5
-                        attr_mask.append(0.0)
-                else:
-                    attr_mask.append(1.0)
+                    val = 0.5  # fallback 到中性值
                 attr_scores.append(float(val))
             if attr_scores:
                 out['attribute_scores'] = torch.tensor(attr_scores, dtype=torch.float32)
-                out['attribute_mask'] = torch.tensor(attr_mask, dtype=torch.float32)
 
         return out
-
-
-def _collate_filter_none(batch):
-    """过滤 __getitem__ 返回 None 的样本（GT为NaN）。"""
-    batch = [b for b in batch if b is not None]
-    if not batch:
-        # 返回空 batch 而非 None，避免 DataLoader worker 内部 default_collate(None) 崩溃
-        return {"face_rgb": torch.empty(0), "target_score": torch.empty(0)}
-    return default_collate(batch)
 
 
 def get_data_transforms(config: Dict, split: str = 'train') -> transforms.Compose:
@@ -1172,7 +1145,6 @@ def create_data_loaders(config: Dict) -> Tuple[DataLoader, DataLoader, DataLoade
         uv_log_ratio=uv_log_ratio,
         allowed_scenes=allowed_scenes,
         attribute_gt_paths=attribute_gt_paths,
-        nan_handling=config.get("NAN_HANDLING", "fallback_0.5"),
     )
     
     train_dataset = FacialPreferenceDataset(
@@ -1214,8 +1186,7 @@ def create_data_loaders(config: Dict) -> Tuple[DataLoader, DataLoader, DataLoade
         pin_memory=pin_memory,
         persistent_workers=persistent_workers,
         prefetch_factor=prefetch_factor,
-        drop_last=True,  # 丢弃最后一个不完整的batch
-        collate_fn=_collate_filter_none,  # 过滤GT为NaN的样本
+        drop_last=True  # 丢弃最后一个不完整的batch
     )
     
     val_loader = DataLoader(

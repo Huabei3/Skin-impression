@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -23,9 +24,11 @@ logger = logging.getLogger(__name__)
 
 
 class Trainer:
-    def __init__(self, config: Dict):
+    def __init__(self, config: Dict, resume_path: Optional[str] = None, reset_feminine_head: bool = False):
         self.config = config
         self.device = torch.device(config.get("DEVICE", "cuda") if torch.cuda.is_available() else "cpu")
+        self.resume_path = resume_path
+        self._reset_feminine_head = reset_feminine_head
 
         self._setup_directories()
 
@@ -40,6 +43,10 @@ class Trainer:
         self.model = create_model(self.config, model_type="full", use_attention=True, model_variant=model_variant).to(self.device)
         self.criterion = ScoreOnlyLoss(self.config)
 
+        # 多 head 标记
+        self._multi_head = bool(self.config.get("MULTI_HEAD", False)) and self.model.is_multi_head
+        self._attribute_names = list(self.model.attribute_names) if self._multi_head else []
+
         self._setup_optimizer()
         self._setup_scheduler()
 
@@ -50,6 +57,11 @@ class Trainer:
 
         self.best_val_loss = float("inf")
         self.patience_counter = 0
+        self.start_epoch = 0
+
+        # --- resume ---
+        if self.resume_path is not None:
+            self._resume_from_checkpoint(self.resume_path)
 
     def _setup_directories(self) -> None:
         for k in ("OUTPUT_DIR", "CHECKPOINT_DIR", "LOG_DIR", "RESULT_DIR"):
@@ -80,11 +92,55 @@ class Trainer:
         else:
             self.scheduler = None
 
+    def _resume_from_checkpoint(self, ckpt_path: str) -> None:
+        """从 checkpoint 恢复模型、优化器、scheduler 和训练状态。"""
+        ckpt = torch.load(ckpt_path, map_location=self.device)
+        logger.info(f"Resuming from checkpoint: {ckpt_path}")
+
+        # 模型权重
+        state_dict = ckpt["model_state_dict"]
+        if self._reset_feminine_head:
+            # 过滤掉 03Feminine head 的权重，让该 head 保持随机初始化
+            filtered = {k: v for k, v in state_dict.items() if "03Feminine" not in k}
+            n_removed = len(state_dict) - len(filtered)
+            logger.info(f"  Reset Feminine head: removed {n_removed} keys from state_dict, "
+                         "Feminine head will use random init.")
+            state_dict = filtered
+        self.model.load_state_dict(state_dict, strict=False)
+        logger.info("  Model weights loaded.")
+        if "optimizer_state_dict" in ckpt:
+            try:
+                self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+                logger.info("  Optimizer state loaded.")
+            except Exception as e:
+                logger.warning(f"  Could not load optimizer state: {e}. Using fresh optimizer.")
+
+        # scheduler 状态
+        if self.scheduler is not None and "scheduler_state_dict" in ckpt and ckpt["scheduler_state_dict"] is not None:
+            try:
+                self.scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+                logger.info("  Scheduler state loaded.")
+            except Exception as e:
+                logger.warning(f"  Could not load scheduler state: {e}. Using fresh scheduler.")
+
+        # 训练状态
+        self.start_epoch = int(ckpt.get("epoch", -1)) + 1
+        self.best_val_loss = float(ckpt.get("metrics", {}).get("val_loss", float("inf")))
+        self.patience_counter = 0  # resume 时重置 patience
+
+        logger.info(f"  Resuming from epoch {self.start_epoch} (best_val_loss={self.best_val_loss:.4f})")
+
     @staticmethod
     def _maybe_normalize_target_score(target_score: torch.Tensor) -> torch.Tensor:
         if target_score.max() > 1.5:
             return target_score / 10.0
         return target_score
+
+    def _get_target_from_batch(self, batch: Dict) -> torch.Tensor:
+        """从 batch 中获取 target。多头时返回 (B, N)，单头时返回 (B, 1)。"""
+        if self._multi_head and "attribute_scores" in batch:
+            return batch["attribute_scores"].to(self.device, non_blocking=True)
+        return batch["preference_score"].to(self.device, non_blocking=True)
 
     def train_epoch(self, epoch: int) -> Dict[str, float]:
         self.model.train()
@@ -93,11 +149,16 @@ class Trainer:
         pearson_loss_sum = 0.0
         num_batches = 0
 
-        progress = tqdm(self.train_loader, desc=f"Epoch {epoch}")
-        for batch in progress:
+        progress = tqdm(self.train_loader, desc=f"Epoch {epoch}", disable=not sys.stdout.isatty())
+        for batch_idx, batch in enumerate(progress):
+            if batch is None or batch.get("face_rgb") is not None and batch["face_rgb"].shape[0] == 0:
+                continue
             face_rgb = batch["face_rgb"].to(self.device, non_blocking=True)
             global_rgb = batch.get("global_rgb", face_rgb).to(self.device, non_blocking=True)
-            target_score = batch["preference_score"].to(self.device, non_blocking=True)
+            target_score = self._get_target_from_batch(batch)
+            attr_mask = batch.get("attribute_mask", None)
+            if attr_mask is not None:
+                attr_mask = attr_mask.to(self.device, non_blocking=True)
             face_uv = None if str(self.config.get("MODEL_VARIANT", "v1")).lower().strip() == "v3" else batch["face_uv"].to(self.device, non_blocking=True)
 
             self.optimizer.zero_grad(set_to_none=True)
@@ -106,7 +167,7 @@ class Trainer:
                 with autocast():
                     pred_logits = self.model(face_rgb, face_uv, global_rgb)
                     pred_logits = torch.nan_to_num(pred_logits, nan=0.0, posinf=1e6, neginf=-1e6)
-                    loss, loss_dict = self.criterion(pred_logits, target_score)
+                    loss, loss_dict = self.criterion(pred_logits, target_score, attr_mask)
                 self.scaler.scale(loss).backward()
                 self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), float(self.config["TRAINING"].get("gradient_clip", 1.0)))
@@ -115,7 +176,7 @@ class Trainer:
             else:
                 pred_logits = self.model(face_rgb, face_uv, global_rgb)
                 pred_logits = torch.nan_to_num(pred_logits, nan=0.0, posinf=1e6, neginf=-1e6)
-                loss, loss_dict = self.criterion(pred_logits, target_score)
+                loss, loss_dict = self.criterion(pred_logits, target_score, attr_mask)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), float(self.config["TRAINING"].get("gradient_clip", 1.0)))
                 self.optimizer.step()
@@ -128,7 +189,10 @@ class Trainer:
             pearson_loss_sum += float(loss_dict.get("pearson", 0.0))
             num_batches += 1
 
-            progress.set_postfix(loss=f"{float(loss.item()):.4f}")
+            pearson_r = 1.0 - float(loss_dict.get("pearson", 0.0))
+            progress.set_postfix(loss=f"{float(loss.item()):.4f}", r=f"{pearson_r:.4f}")
+            if progress.disable and (batch_idx == 0 or (batch_idx + 1) % max(1, len(self.train_loader) // 5) == 0):
+                logger.info(f"  Batch {batch_idx+1}/{len(self.train_loader)} loss={float(loss.item()):.4f} r={pearson_r:.4f}")
 
         if self.scheduler is not None:
             self.scheduler.step(epoch + 1)
@@ -152,7 +216,7 @@ class Trainer:
         for batch in self.val_loader:
             face_rgb = batch["face_rgb"].to(self.device, non_blocking=True)
             global_rgb = batch.get("global_rgb", face_rgb).to(self.device, non_blocking=True)
-            target_score = batch["preference_score"].to(self.device, non_blocking=True)
+            target_score = self._get_target_from_batch(batch)
             face_uv = None if str(self.config.get("MODEL_VARIANT", "v1")).lower().strip() == "v3" else batch["face_uv"].to(self.device, non_blocking=True)
 
             pred_logits = self.model(face_rgb, face_uv, global_rgb)
@@ -161,8 +225,16 @@ class Trainer:
             if torch.isfinite(loss):
                 losses.append(float(loss.item()))
 
-            all_pred.append(torch.sigmoid(pred_logits).cpu())
-            all_tgt.append(self._maybe_normalize_target_score(target_score).cpu())
+            # 多 head 时只取第 0 个（preference_score）计算 metrics
+            if self._multi_head and pred_logits.shape[1] > 1:
+                pred_for_metrics = pred_logits[:, 0:1]
+                tgt_for_metrics = target_score[:, 0:1] if target_score.dim() == 2 and target_score.shape[1] > 1 else target_score
+            else:
+                pred_for_metrics = pred_logits
+                tgt_for_metrics = target_score
+
+            all_pred.append(torch.sigmoid(pred_for_metrics).cpu())
+            all_tgt.append(self._maybe_normalize_target_score(tgt_for_metrics).cpu())
 
         if not losses or not all_pred:
             return {"val_loss": float("inf"), "mae": float("nan"), "pearson": float("nan")}
@@ -178,7 +250,7 @@ class Trainer:
         patience = int(self.config["TRAINING"].get("early_stopping_patience", 20))
         interval = int(self.config["TRAINING"].get("checkpoint_interval", 100))
 
-        for epoch in range(num_epochs):
+        for epoch in range(self.start_epoch, num_epochs):
             train_m = self.train_epoch(epoch)
             val_m = self.validate()
 
@@ -255,11 +327,20 @@ class Trainer:
         for batch in self.test_loader:
             face_rgb = batch["face_rgb"].to(self.device, non_blocking=True)
             global_rgb = batch.get("global_rgb", face_rgb).to(self.device, non_blocking=True)
-            target_score = batch["preference_score"].to(self.device, non_blocking=True)
+            target_score = self._get_target_from_batch(batch)
             face_uv = None if str(self.config.get("MODEL_VARIANT", "v1")).lower().strip() == "v3" else batch["face_uv"].to(self.device, non_blocking=True)
             pred_logits = self.model(face_rgb, face_uv, global_rgb)
-            all_pred.append(torch.sigmoid(pred_logits).cpu())
-            all_tgt.append(self._maybe_normalize_target_score(target_score).cpu())
+
+            # 多 head 时只取第 0 个（preference_score）计算 metrics
+            if self._multi_head and pred_logits.shape[1] > 1:
+                pred_for_metrics = pred_logits[:, 0:1]
+                tgt_for_metrics = target_score[:, 0:1] if target_score.dim() == 2 and target_score.shape[1] > 1 else target_score
+            else:
+                pred_for_metrics = pred_logits
+                tgt_for_metrics = target_score
+
+            all_pred.append(torch.sigmoid(pred_for_metrics).cpu())
+            all_tgt.append(self._maybe_normalize_target_score(tgt_for_metrics).cpu())
 
         ps = torch.cat(all_pred, dim=0).numpy() if all_pred else np.array([])
         ts = torch.cat(all_tgt, dim=0).numpy() if all_tgt else np.array([])
