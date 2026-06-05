@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+data/deepskin*.csv
+output_race/
+results/
+checkpoints/
+checkpoints_race/
+_fix_all.py
+*.xlsx
+experiments/

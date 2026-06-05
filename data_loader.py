@@ -10,7 +10,7 @@ class DataLoader(object):
         self.batch_size = batch_size
         self.istrain = istrain
 
-        if (dataset == 'live') | (dataset == 'csiq') | (dataset == 'tid2013') | (dataset == 'livec'):
+        if (dataset == 'live') | (dataset == 'csiq') | (dataset == 'tid2013') | (dataset == 'deepskin') | (dataset == 'livec'):
             # Train transforms
             if istrain:
                 transforms = torchvision.transforms.Compose([
@@ -78,6 +78,9 @@ class DataLoader(object):
                 root=path, index=img_indx, transform=transforms, patch_num=patch_num)
         elif dataset == 'tid2013':
             self.data = folders.TID2013Folder(
+                root=path, index=img_indx, transform=transforms, patch_num=patch_num)
+        elif dataset == 'deepskin':
+            self.data = folders.DeepskinFolder(
                 root=path, index=img_indx, transform=transforms, patch_num=patch_num)
 
     def get_data(self):

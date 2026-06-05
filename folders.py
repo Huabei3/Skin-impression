@@ -332,3 +332,32 @@ def pil_loader(path):
     with open(path, 'rb') as f:
         img = Image.open(f)
         return img.convert('RGB')
+
+
+class DeepskinFolder(data.Dataset):
+    def __init__(self, root, index, transform, patch_num):
+        imgname = []
+        mos_all = []
+        csv_file = root
+        with open(csv_file) as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                imgname.append(row['img_path'])
+                mos_all.append(float(row['score']))
+
+        sample = []
+        for i, item in enumerate(index):
+            for aug in range(patch_num):
+                sample.append((imgname[item], mos_all[item]))
+
+        self.samples = sample
+        self.transform = transform
+
+    def __getitem__(self, index):
+        path, target = self.samples[index]
+        sample = pil_loader(path)
+        sample = self.transform(sample)
+        return sample, target
+
+    def __len__(self):
+        return len(self.samples)

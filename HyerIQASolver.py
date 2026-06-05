@@ -1,4 +1,6 @@
 import torch
+import os
+import json
 from scipy import stats
 import numpy as np
 import models
@@ -84,6 +86,17 @@ class HyperIQASolver(object):
             self.solver = torch.optim.Adam(self.paras, weight_decay=self.weight_decay)
 
         print('Best test SRCC %f, PLCC %f' % (best_srcc, best_plcc))
+
+        # Save checkpoint
+        ckpt_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'checkpoints')
+        os.makedirs(ckpt_dir, exist_ok=True)
+        ckpt = {
+            'model_state_dict': self.model_hyper.state_dict(),
+            'best_srcc': best_srcc,
+            'best_plcc': best_plcc,
+        }
+        torch.save(ckpt, os.path.join(ckpt_dir, 'model_best_latest.pth'))
+        print('Checkpoint saved.')
 
         return best_srcc, best_plcc
 

@@ -17,6 +17,7 @@ def main(config):
         'livec': '/home/ssl/Database/ChallengeDB_release/ChallengeDB_release/',
         'koniq-10k': '/home/ssl/Database/koniq-10k/',
         'bid': '/home/ssl/Database/BID/',
+        'deepskin': '/root/autodl-tmp/hyperIQA/data/deepskin_01pref.csv',
     }
 
     img_num = {
@@ -26,11 +27,12 @@ def main(config):
         'livec': list(range(0, 1162)),
         'koniq-10k': list(range(0, 10073)),
         'bid': list(range(0, 586)),
+        'deepskin': list(range(0, 693)),
     }
     sel_num = img_num[config.dataset]
 
-    srcc_all = np.zeros(config.train_test_num, dtype=np.float)
-    plcc_all = np.zeros(config.train_test_num, dtype=np.float)
+    srcc_all = np.zeros(config.train_test_num, dtype=float)
+    plcc_all = np.zeros(config.train_test_num, dtype=float)
 
     print('Training and testing on %s dataset for %d rounds...' % (config.dataset, config.train_test_num))
     for i in range(config.train_test_num):
@@ -50,12 +52,26 @@ def main(config):
 
     print('Testing median SRCC %4.4f,\tmedian PLCC %4.4f' % (srcc_med, plcc_med))
 
+    # Save results
+    import os as _os, json as _json
+    res_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'results')
+    _os.makedirs(res_dir, exist_ok=True)
+    results = {
+        'srcc_all': srcc_all.tolist(),
+        'plcc_all': plcc_all.tolist(),
+        'srcc_med': float(srcc_med),
+        'plcc_med': float(plcc_med),
+    }
+    with open(_os.path.join(res_dir, 'results_latest.json'), 'w') as _f:
+        _json.dump(results, _f, indent=2)
+    print('Results saved.')
+
     # return srcc_med, plcc_med
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', dest='dataset', type=str, default='livec', help='Support datasets: livec|koniq-10k|bid|live|csiq|tid2013')
+    parser.add_argument('--dataset', dest='dataset', type=str, default='livec', help='Support datasets: livec|koniq-10k|bid|live|csiq|tid2013|deepskin')
     parser.add_argument('--train_patch_num', dest='train_patch_num', type=int, default=25, help='Number of sample patches from training image')
     parser.add_argument('--test_patch_num', dest='test_patch_num', type=int, default=25, help='Number of sample patches from testing image')
     parser.add_argument('--lr', dest='lr', type=float, default=2e-5, help='Learning rate')
