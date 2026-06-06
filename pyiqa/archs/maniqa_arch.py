@@ -8,6 +8,7 @@ Reference:
     - Official github: https://github.com/IIGROUP/MANIQA
 """
 
+import os
 import torch
 import torch.nn as nn
 import timm
@@ -121,7 +122,13 @@ class MANIQA(nn.Module):
         self.test_sample = test_sample
         self.patches_resolution = (img_size // patch_size, img_size // patch_size)
 
-        self.vit = timm.create_model('vit_base_patch8_224', pretrained=True)
+        # Load ViT from local cache (avoid HF download)
+        vit_path = '/root/.cache/torch/hub/timm/vit_base_patch8_224.augreg2_in21k_ft_in1k/pytorch_model.bin'
+        if os.path.exists(vit_path):
+            self.vit = timm.create_model('vit_base_patch8_224', pretrained=False)
+            self.vit.load_state_dict(torch.load(vit_path, map_location='cpu', weights_only=True), strict=True)
+        else:
+            self.vit = timm.create_model('vit_base_patch8_224', pretrained=True)
         self.save_output = SaveOutput()
         hook_handles = []
         for layer in self.vit.modules():
@@ -182,7 +189,7 @@ class MANIQA(nn.Module):
 
         if pretrained_model_path is not None:
             load_pretrained_network(
-                self, pretrained_model_path, True, weight_keys='params'
+                self, pretrained_model_path, True, weight_keys=None
             )
             # load_pretrained_network(self, pretrained_model_path, True, )
         elif pretrained:
