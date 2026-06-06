@@ -238,7 +238,7 @@ class FacialPreferenceDataset(Dataset):
             logger.error(f"Failed to load attribute GT {attr_name} from {gt_path}: {e}")
 
         self._attribute_gt_caches[attr_name] = lookup
-        logger.info(f"Loaded {len(lookup)} GT entries for attribute '{attr_name}' from {gt_path}")
+        logger.debug(f"Loaded {len(lookup)} GT entries for attribute '{attr_name}' from {gt_path}")
         return lookup
 
     @staticmethod
