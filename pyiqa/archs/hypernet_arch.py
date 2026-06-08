@@ -57,9 +57,19 @@ class HyperNet(nn.Module):
         default_std=[0.229, 0.224, 0.225],
     ):
         super(HyperNet, self).__init__()
-        self.base_model = timm.create_model(
-            base_model_name, pretrained=True, features_only=True
-        )
+        # Load from local cache (avoid HF download), keep features_only=True
+        import os as _os
+        _vit_path = '/root/.cache/torch/hub/timm/resnet50.a1_in1k/pytorch_model.bin'
+        if _os.path.exists(_vit_path):
+            self.base_model = timm.create_model(
+                base_model_name, pretrained=False, features_only=True
+            )
+            _sd = torch.load(_vit_path, map_location='cpu', weights_only=True)
+            self.base_model.load_state_dict(_sd, strict=False)
+        else:
+            self.base_model = timm.create_model(
+                base_model_name, pretrained=True, features_only=True
+            )
 
         lda_out_channels = 16
         hyper_in_channels = 112

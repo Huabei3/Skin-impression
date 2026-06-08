@@ -132,7 +132,9 @@ def load_resume_state(opt):
 
     if resume_state_path is None:
         resume_state = None
+        print('[INFO] Auto-resume: no checkpoint found, starting from scratch.')
     else:
+        print(f'[INFO] Auto-resume: loading {resume_state_path}')
         device_id = torch.cuda.current_device()
         resume_state = torch.load(
             resume_state_path, map_location=lambda storage, loc: storage.cuda(device_id)
@@ -160,8 +162,7 @@ def train_pipeline(root_path, opt=None, args=None):
             and 'debug' not in opt['name']
             and opt['rank'] == 0
         ):
-            os.makedirs(osp.join(opt['root_path'], 'tb_logger_archived'), exist_ok=True)
-            mkdir_and_rename(osp.join(opt['root_path'], 'tb_logger', opt['name']))
+            os.makedirs(osp.join(opt['root_path'], 'tb_logger', opt['name']), exist_ok=True)  # archive disabled
 
     # copy the yml file to the experiment root
     copy_opt_file(args.opt, opt['path']['experiments_root'])

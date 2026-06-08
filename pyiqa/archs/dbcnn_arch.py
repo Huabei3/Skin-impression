@@ -144,10 +144,13 @@ class DBCNN(nn.Module):
                 param.requires_grad = False
             for param in scnn.parameters():
                 param.requires_grad = False
+            print(f'[DBCNN] fc=True: VGG16+SCNN backbone FROZEN, only fc layer trainable')
             # Initialize the fc layers.
             nn.init.kaiming_normal_(self.fc.weight.data)
             if self.fc.bias is not None:
                 nn.init.constant_(self.fc.bias.data, val=0)
+        else:
+            print(f'[DBCNN] fc=False: ALL layers trainable (full fine-tuning)')
 
         if pretrained_model_path is None and pretrained:
             url_key = 'koniq' if isinstance(pretrained, bool) else pretrained

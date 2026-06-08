@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from collections import OrderedDict
 from os import path as osp
@@ -21,7 +22,7 @@ class GeneralIQAModel(BaseModel):
         # define network
         self.net = build_network(opt['network'])
         self.net = self.model_to_device(self.net)
-        self.print_network(self.net)
+        # self.print_network(self.net)
 
         # load pretrained models
         load_path = self.opt['path'].get('pretrain_network', None)
@@ -258,10 +259,10 @@ class GeneralIQAModel(BaseModel):
     def _log_validation_metric_values(self, current_iter, dataset_name, tb_logger):
         log_str = f'Validation {dataset_name}\n'
         for metric, value in self.metric_results.items():
-            log_str += f'\t # {metric}: {value:.4f}'
+            log_str += f'\t # {metric}: {float(np.asarray(value).flat[0]):.4f}'
             if hasattr(self, 'best_metric_results'):
                 log_str += (
-                    f'\tBest: {self.best_metric_results[dataset_name][metric]["val"]:.4f} @ '
+                    f'\tBest: {float(np.asarray(self.best_metric_results[dataset_name][metric]["val"]).flat[0]):.4f} @ '
                     f'{self.best_metric_results[dataset_name][metric]["iter"]} iter'
                 )
             log_str += '\n'
@@ -271,7 +272,7 @@ class GeneralIQAModel(BaseModel):
         if tb_logger:
             for metric, value in self.metric_results.items():
                 tb_logger.add_scalar(
-                    f'val_metrics/{dataset_name}/{metric}', value, current_iter
+                    f'val_metrics/{dataset_name}/{metric}', float(np.asarray(value).flat[0]), current_iter
                 )
 
     def save(self, epoch, current_iter, save_net_label='net'):
