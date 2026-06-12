@@ -121,12 +121,12 @@ def evaluate_model(net, dataloader, phase_name):
         print(pivot_merged.to_string())
 
     # Compute average per-scene metrics
-    avg_srcc = np.mean([r["srcc"] for r in scene_results if not np.isnan(r["srcc"])]) if scene_results else 0
-    avg_plcc = np.mean([r["plcc"] for r in scene_results if not np.isnan(r["plcc"])]) if scene_results else 0
+    avg_srcc = np.nanmean([r["srcc"] for r in scene_results]) if scene_results else 0
+    avg_plcc = np.nanmean([r["plcc"] for r in scene_results]) if scene_results else 0
     print(f"  [{phase_name}] Overall: SRCC={avg_srcc:.4f}, PLCC={avg_plcc:.4f} (mean of {len(scene_results)} scenes, {len(preds_all)} images)")
     # Overall = mean of per-scene correlations
-    avg_srcc = np.mean([r["srcc"] for r in scene_results if not np.isnan(r["srcc"])]) if scene_results else 0
-    avg_plcc = np.mean([r["plcc"] for r in scene_results if not np.isnan(r["plcc"])]) if scene_results else 0
+    avg_srcc = np.nanmean([r["srcc"] for r in scene_results]) if scene_results else 0
+    avg_plcc = np.nanmean([r["plcc"] for r in scene_results]) if scene_results else 0
     print(f"  [{phase_name}] Overall: SRCC={avg_srcc:.4f}, PLCC={avg_plcc:.4f} (mean of {len(scene_results)} scenes, {len(preds_all)} images)")
     return float(avg_srcc), float(avg_plcc), len(preds_all), pivot_merged, detail_preds
 
@@ -160,7 +160,11 @@ def main():
 
                 # Build model
                 net = build_network(opt['network'])
-                state = torch.load(ckpt_path, map_location='cpu', weights_only=True)
+                try:
+                    state = torch.load(ckpt_path, map_location='cpu', weights_only=True)
+                except Exception as e:
+                    print(f'[SKIP] {model_name}/{race}/{phase}: corrupted checkpoint ({e})')
+                    continue
                 if 'params' in state:
                     net.load_state_dict(state['params'], strict=False)
                 else:
