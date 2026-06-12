@@ -221,6 +221,11 @@ class GeneralIQAModel(BaseModel):
         gt_mos = torch.cat(gt_mos, dim=0).squeeze(1).cpu().numpy()
 
         if with_metrics:
+            # DEBUG: print sample predictions
+            print(f'[DEBUG] Val predictions: min={pred_score.min():.6f}, max={pred_score.max():.6f}, std={pred_score.std():.6f}')
+            print(f'[DEBUG] Val GT: min={gt_mos.min():.6f}, max={gt_mos.max():.6f}, std={gt_mos.std():.6f}')
+            print(f'[DEBUG] First 10 preds: {pred_score[:10].tolist()}')
+            print(f'[DEBUG] First 10 GTs:   {gt_mos[:10].tolist()}')
             # calculate all metrics
             for name, opt_ in self.opt['val']['metrics'].items():
                 self.metric_results[name] = calculate_metric([pred_score, gt_mos], opt_)

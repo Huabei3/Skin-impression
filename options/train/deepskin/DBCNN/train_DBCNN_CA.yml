@@ -30,7 +30,6 @@ network:
   fc: false
 
 path:
-  auto_resume: true
   root: ./experiments
   pretrain_network: null
   strict_load_g: true

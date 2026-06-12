@@ -26,7 +26,7 @@ datasets:
     phase: val
 network:
   type: HyperNet
-  pretrained: true
+  pretrained: false
 
 path:
   root: ./experiments

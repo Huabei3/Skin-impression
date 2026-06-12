@@ -26,9 +26,10 @@ datasets:
     phase: val
 network:
   type: HyperNet
-  pretrained: true
+  pretrained: false
 
 path:
+  auto_resume: true
   root: ./experiments
   pretrain_network: null
   strict_load_g: true

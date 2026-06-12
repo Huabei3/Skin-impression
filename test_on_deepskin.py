@@ -19,12 +19,14 @@ parser.add_argument('--legacy', action='store_true', help='Use fc:true DBCNN')
 parser.add_argument('--models', nargs='+', default=None)
 parser.add_argument('--races', nargs='+', default=None)
 parser.add_argument('--val', action='store_true', help='Run on val set (sanity check)')
+parser.add_argument('--debug', action='store_true', help='Print per-image pred/gt values')
 args = parser.parse_args()
 
 DB_LEGACY = args.legacy
 if args.models: MODELS = args.models
 if args.races: RACES = args.races
 PHASES = ["test"]
+DEBUG = args.debug
 if args.val:
     PHASES = ["val", "test"]
 
@@ -48,6 +50,11 @@ def parse_scene_subject(img_path_str):
             scene = m.group(1) if m else fname.split("_")[0]
         return subj, scene
     return img_path_str[:4], "unknown"
+
+
+def _safe_scalar(x):
+    """Extract scalar from scipy stats result, handling ndarray/nan"""
+    return float(np.asarray(x).flat[0])
 
 def evaluate_model(net, dataloader, phase_name):
     """Run inference, group by scene, return per-scene PLCC table + overall metrics."""
@@ -76,23 +83,20 @@ def evaluate_model(net, dataloader, phase_name):
                 "name": img_path, "pred": pred_val[i], "gt": gt_val[i],
                 "subject": subj, "scene": scene
             })
+            if DEBUG:
+                pbar.write(f"    {img_path.split('/')[-1]:30s} pred={float(np.asarray(pred_val[i]).flat[0]):.4f} gt={float(np.asarray(gt_val[i]).flat[0]):.4f}")
 
             # Track scene-level metrics in progress bar
             if scene != last_scene and last_scene is not None:
                 if len(scene_batch_preds) > 1 and len(set(scene_batch_gts)) > 1:
-                    sc_plcc, _ = stats.pearsonr(scene_batch_preds, scene_batch_gts)
-                    pbar.set_postfix_str(f"scene#{scene_count} {last_scene}/{subj_prev} PLCC={sc_plcc:.3f}")
+                    sc_plcc = _safe_scalar(stats.pearsonr(scene_batch_preds, scene_batch_gts)[0])
+                    pbar.set_postfix_str(f"scene#{scene_count} {last_scene}/{subj_prev} PLCC={float(np.asarray(sc_plcc).flat[0]):.3f}")
                 scene_batch_preds, scene_batch_gts = [], []
                 scene_count += 1
             scene_batch_preds.append(pred_val[i])
             scene_batch_gts.append(gt_val[i])
             last_scene = scene
             subj_prev = subj
-
-    # Overall metrics
-    srcc, _ = stats.spearmanr(preds_all, gts_all)
-    plcc, _ = stats.pearsonr(preds_all, gts_all)
-    print(f"  [{phase_name}] Overall: SRCC={float(np.asarray(srcc).flat[0]):.4f}, PLCC={float(np.asarray(plcc).flat[0]):.4f} (n={len(preds_all)})")
 
     # Per-scene metrics
     scene_results = []
@@ -103,10 +107,11 @@ def evaluate_model(net, dataloader, phase_name):
             gts = [p[1] for p in pairs]
             n = len(pairs)
             if n > 1 and len(set(gts)) > 1:
-                sc_plcc, _ = stats.pearsonr(preds, gts)
+                sc_srcc = _safe_scalar(stats.spearmanr(preds, gts)[0])
+                sc_plcc = _safe_scalar(stats.pearsonr(preds, gts)[0])
             else:
-                sc_plcc = np.nan
-            scene_results.append({"scene": scene, "subject": subj, "plcc": round(sc_plcc, 4), "n": n})
+                sc_srcc, sc_plcc = np.nan, np.nan
+            scene_results.append({"scene": scene, "subject": subj, "plcc": round(sc_plcc, 4), "srcc": round(sc_srcc, 4), "n": n})
 
     scene_df = pd.DataFrame(scene_results)
     if len(scene_df) > 0:
@@ -115,13 +120,23 @@ def evaluate_model(net, dataloader, phase_name):
         print(f"  [{phase_name}] Per-scene PLCC:")
         print(pivot_merged.to_string())
 
+    # Compute average per-scene metrics
+    avg_srcc = np.mean([r["srcc"] for r in scene_results if not np.isnan(r["srcc"])]) if scene_results else 0
+    avg_plcc = np.mean([r["plcc"] for r in scene_results if not np.isnan(r["plcc"])]) if scene_results else 0
+    print(f"  [{phase_name}] Overall: SRCC={avg_srcc:.4f}, PLCC={avg_plcc:.4f} (mean of {len(scene_results)} scenes, {len(preds_all)} images)")
+    # Overall = mean of per-scene correlations
+    avg_srcc = np.mean([r["srcc"] for r in scene_results if not np.isnan(r["srcc"])]) if scene_results else 0
+    avg_plcc = np.mean([r["plcc"] for r in scene_results if not np.isnan(r["plcc"])]) if scene_results else 0
+    print(f"  [{phase_name}] Overall: SRCC={avg_srcc:.4f}, PLCC={avg_plcc:.4f} (mean of {len(scene_results)} scenes, {len(preds_all)} images)")
     return float(avg_srcc), float(avg_plcc), len(preds_all), pivot_merged, detail_preds
 
 
 def main():
     results_all = {}
     xlsx_path = "results/test_predictions.xlsx"
-    writer = pd.ExcelWriter(xlsx_path, engine="openpyxl")
+    # Remove old file on first run so we always start fresh per script execution
+    if os.path.exists(xlsx_path):
+        os.remove(xlsx_path)  # collect all sheets, write at end
 
     for model_name in MODELS:
         results_all[model_name] = {}
@@ -175,21 +190,19 @@ def main():
                     "srcc": srcc, "plcc": plcc, "n_test": n
                 }
 
-                # Write sheet immediately
-                if pivot is not None and len(pivot) > 0 and model_name == MODELS[-1]:
-                    # Only save xlsx for the main test phase (not val)
-                    pass
-
-                # Save per-model-race-phase xlsx
+                # Write sheet immediately (append to existing xlsx)
                 sheet_name = f"{model_name}_{race}_{phase}"[:31]
                 if pivot is not None and len(pivot) > 0:
-                    pivot.to_excel(writer, sheet_name=sheet_name)
-                    print(f"  -> Sheet '{sheet_name}' written")
-                writer.close()
-                # Reopen for next sheet
-                writer = pd.ExcelWriter(xlsx_path, engine="openpyxl", mode="a", if_sheet_exists="replace")
-
-    writer.close()
+                    mode = "w" if not os.path.exists(xlsx_path) else "a"
+                    try:
+                        kwargs = {"engine": "openpyxl", "mode": mode}
+                        if mode == "a":
+                            kwargs["if_sheet_exists"] = "replace"
+                        with pd.ExcelWriter(xlsx_path, **kwargs) as writer:
+                            pivot.to_excel(writer, sheet_name=sheet_name)
+                        print(f"  -> Sheet '{sheet_name}' written")
+                    except Exception as e:
+                        print(f"  -> Sheet '{sheet_name}' FAILED: {e}")
 
     # Save summary JSON
     os.makedirs("results", exist_ok=True)
