@@ -245,6 +245,15 @@ def main() -> None:
         help="Enable multi-head mode: parallel ScoreHeads sharing feature extractor.",
     )
     parser.add_argument(
+        "--multi-head-loss-mask",
+        action="store_true",
+        default=False,
+        help="Combined convenience flag: enables --multi-head with all 10 attributes "
+             "and --nan-handling loss_mask in one step. "
+             "Equivalent to: --multi-head --attributes all --nan-handling loss_mask. "
+             "When False, falls back to original single-head logic.",
+    )
+    parser.add_argument(
         "--attributes",
         type=str,
         default=None,
@@ -326,6 +335,15 @@ def main() -> None:
         _apply_race_overrides(config, args.race)
     # =====================================
 
+    # ========== multi-head-loss-mask 组合参数 ==========
+    # 一键启用：multi-head + 全部 10 属性 + loss_mask NaN 处理
+    if bool(args.multi_head_loss_mask):
+        args.multi_head = True
+        if args.attributes is None:
+            args.attributes = "all"
+        args.nan_handling = "loss_mask"
+    # =================================================
+    
     # ========== 多属性 head 配置 ==========
     if bool(args.multi_head):
         config["MULTI_HEAD"] = True
