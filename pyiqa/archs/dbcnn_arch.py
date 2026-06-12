@@ -116,6 +116,7 @@ class DBCNN(nn.Module):
         self,
         fc=True,
         use_bn=True,
+        num_outputs=1,
         pretrained_scnn_path=None,
         pretrained=True,
         pretrained_model_path=None,
@@ -133,7 +134,7 @@ class DBCNN(nn.Module):
         self.features2 = scnn.features
 
         # Linear classifier.
-        self.fc = torch.nn.Linear(512 * 128, 1)
+        self.fc = torch.nn.Linear(512 * 128, num_outputs)
 
         self.default_mean = torch.Tensor(default_mean).view(1, 3, 1, 1)
         self.default_std = torch.Tensor(default_std).view(1, 3, 1, 1)

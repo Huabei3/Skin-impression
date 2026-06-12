@@ -55,6 +55,7 @@ class HyperNet(nn.Module):
         pretrained_model_path=None,
         default_mean=[0.485, 0.456, 0.406],
         default_std=[0.229, 0.224, 0.225],
+        num_outputs=1,
     ):
         super(HyperNet, self).__init__()
         # Load from local cache (avoid HF download), keep features_only=True
@@ -74,7 +75,7 @@ class HyperNet(nn.Module):
         lda_out_channels = 16
         hyper_in_channels = 112
         target_in_size = 224
-        hyper_fc_channels = [112, 56, 28, 14, 1]
+        hyper_fc_channels = [112, 56, 28, 14, num_outputs]
         feature_size = 7  # spatial size of the last features from base model
         self.hyper_fc_channels = hyper_fc_channels
 
@@ -211,7 +212,7 @@ class HyperNet(nn.Module):
                     i
                 ].unsqueeze(1)
 
-        return x.squeeze(-1)
+        return x.squeeze(1)  # (B, num_outputs) for multi-head compat
 
     def forward(self, x):
         r"""Compute HyperNet quality score.
