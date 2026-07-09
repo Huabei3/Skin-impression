@@ -6,41 +6,27 @@ import torch
 import torch.nn as nn
 
 from .face_stream import AttentiveFaceStream, FaceStream, FaceStreamV2, FaceStreamV3
-from .fusion import TwoStreamFusion, SimpleConcatFusion
+from .fusion import TwoStreamFusion, create_fusion
 from .global_stream import GlobalStream
-from .heads import ScoreHead, MultiScoreHead
+from .heads import ScoreHead
+from .stat_stream import StatisticalStream
 
 
 class PredictPNetwork(nn.Module):
     """
     predict_p standalone network.
 
-Outputs:
-  - score_logits: (B, 1)       (single-head)
-  - score_logits: (B, num_heads) (multi-head, when MULTI_HEAD=True)
+    Supports:
+      - Single-head (default): self.score_head → (B, 1)
+      - Multi-head (MULTI_HEAD=True): self.score_heads (ModuleDict) → (B, N)
+      - Statistical Stream (ABLATION_STAT_STREAM=True): metadata → stat features fused before head
+    """
 
-Ablation 参数:
-  - use_face_only:  True → 仅用 FaceStream，跳过 GlobalStream + Fusion (Ablation-1)
-  - fusion_type:    "gated" (默认) 或 "concat" (Ablation-2)
-"""
-
-    def __init__(
-        self,
-        config: Dict,
-        use_attention: bool = True,
-        model_variant: str = "v1",
-        multi_head: bool = False,
-        attribute_names: Optional[List[str]] = None,
-        use_face_only: bool = False,
-        fusion_type: str = "gated",
-    ) -> None:
+    def __init__(self, config: Dict, use_attention: bool = True, model_variant: str = "v1") -> None:
         super().__init__()
         self.config = config
         self.use_attention = use_attention
         self.model_variant = str(model_variant).lower().strip()
-        self.multi_head = bool(multi_head)
-        self.use_face_only = bool(use_face_only)
-        self.fusion_type = str(fusion_type).lower().strip()
 
         if self.model_variant == "v1":
             if use_attention:
@@ -53,70 +39,85 @@ Ablation 参数:
             self.face_stream = FaceStreamV3(config)
         else:
             raise ValueError(f"Unsupported model_variant for predict_p: {self.model_variant!r}")
+        self.global_stream = GlobalStream(config)
 
+        # ===== Phase 0: 通过 ABLATION_FUSION_TYPE 选择融合模块 =====
+        fusion_type = str(config.get("ABLATION_FUSION_TYPE", "gated")).lower().strip()
         fusion_cfg = config["MODEL"]["fusion"]
         fusion_dim = int(fusion_cfg["fusion_dim"])
         dropout = float(fusion_cfg.get("dropout", 0.3))
 
-        # Ablation-1: face-only 模式，不创建 global_stream 和 fusion
-        if self.use_face_only:
-            self.global_stream = None
-            self.fusion = None
-            # face-only 时 head 输入维度 = face_stream 输出维度
-            head_input_dim = self.face_stream.output_dim
-        else:
-            self.global_stream = GlobalStream(config)
-            # Ablation-2: 选择 fusion 类型
-            if self.fusion_type == "concat":
-                self.fusion = SimpleConcatFusion(
-                    face_dim=self.face_stream.output_dim,
-                    global_dim=self.global_stream.output_dim,
-                    fusion_dim=fusion_dim,
-                    dropout=dropout,
-                )
-            else:
-                self.fusion = TwoStreamFusion(
-                    face_dim=self.face_stream.output_dim,
-                    global_dim=self.global_stream.output_dim,
-                    fusion_dim=fusion_dim,
-                    dropout=dropout,
-                )
-            head_input_dim = fusion_dim
-
-        head_cfg = config["MODEL"]["prediction_heads"]["preference_score"]
-        hidden_dims = list(head_cfg.get("hidden_dims", [128, 64]))
-
-        if self.multi_head and attribute_names:
-            self.score_head = MultiScoreHead(
-                input_dim=head_input_dim,
-                hidden_dims=hidden_dims,
-                attribute_names=list(attribute_names),
+        if fusion_type in ("gated", "default", ""):
+            self.fusion = TwoStreamFusion(
+                face_dim=self.face_stream.output_dim,
+                global_dim=self.global_stream.output_dim,
+                fusion_dim=fusion_dim,
+                dropout=dropout,
             )
-            self._attribute_names = list(attribute_names)
         else:
+            self.fusion = create_fusion(
+                fusion_type=fusion_type,
+                face_dim=self.face_stream.output_dim,
+                global_dim=self.global_stream.output_dim,
+                fusion_dim=fusion_dim,
+                dropout=dropout,
+            )
+        # ============================================================
+
+        # ===== Statistical Stream =====
+        self._stat_enabled = bool(config.get("ABLATION_STAT_STREAM", False))
+        if self._stat_enabled:
+            self.stat_stream = StatisticalStream(
+                input_dim=11, hidden_dim=64, output_dim=128, dropout=dropout,
+            )
+            # merge stat (128-D) + fused (256-D) → 256-D
+            self.stat_merge = nn.Sequential(
+                nn.Linear(fusion_dim + 128, fusion_dim),
+                nn.BatchNorm1d(fusion_dim),
+                nn.ReLU(inplace=True),
+                nn.Dropout(dropout),
+            )
+            head_input_dim = fusion_dim
+        else:
+            head_input_dim = fusion_dim
+        # ===============================
+
+        # ===== Multi-head / Single-head =====
+        self._multi_head_enabled = bool(config.get("MULTI_HEAD", False))
+        if self._multi_head_enabled:
+            attr_names: List[str] = list(config.get("ATTRIBUTE_HEAD_NAMES", []))
+            if not attr_names:
+                raise ValueError("MULTI_HEAD=True but ATTRIBUTE_HEAD_NAMES is empty")
+            head_cfg = config["MODEL"]["prediction_heads"]["preference_score"]
+            heads = {}
+            for name in attr_names:
+                heads[name] = ScoreHead(
+                    input_dim=head_input_dim,
+                    hidden_dims=list(head_cfg.get("hidden_dims", [128, 64])),
+                    output_dim=int(head_cfg.get("output_dim", 1)),
+                )
+            self.score_heads = nn.ModuleDict(heads)
+            self._attribute_names = list(attr_names)
+            self.score_head = self.score_heads[attr_names[0]]
+        else:
+            head_cfg = config["MODEL"]["prediction_heads"]["preference_score"]
             self.score_head = ScoreHead(
                 input_dim=head_input_dim,
-                hidden_dims=hidden_dims,
+                hidden_dims=list(head_cfg.get("hidden_dims", [128, 64])),
                 output_dim=int(head_cfg.get("output_dim", 1)),
             )
             self._attribute_names = []
+        # ====================================
 
         self._initialize_weights()
 
     @property
     def is_multi_head(self) -> bool:
-        return bool(self.multi_head and len(self._attribute_names) > 0)
+        return self._multi_head_enabled
 
     @property
     def attribute_names(self) -> List[str]:
         return list(self._attribute_names)
-
-    @property
-    def output_dim(self) -> int:
-        """输出维度：单头=1，多头=属性数。"""
-        if hasattr(self.score_head, "output_dim"):
-            return self.score_head.output_dim
-        return 1
 
     def _initialize_weights(self) -> None:
         for m in self.modules():
@@ -137,34 +138,31 @@ Ablation 参数:
         face_rgb: torch.Tensor,
         face_uv: Optional[torch.Tensor],
         global_rgb: Optional[torch.Tensor] = None,
+        stat_features: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Forward pass.
-        Returns:
-            (B, 1)  if single-head
-            (B, N)  if multi-head (N = len(attribute_names))
-
-        Ablation-1 (use_face_only=True): 跳过 GlobalStream + Fusion，face_feat 直连 head
-        """
         if self.model_variant == "v3":
             face_features = self.face_stream(face_rgb)
         else:
             if face_uv is None:
                 raise ValueError(f"face_uv is required for model_variant={self.model_variant!r}")
             face_features = self.face_stream(face_rgb, face_uv)
-
-        # Ablation-1: face-only
-        if self.use_face_only:
-            return self.score_head(face_features)
-
         global_features = self.global_stream(global_rgb if global_rgb is not None else face_rgb)
         fused = self.fusion(face_features, global_features)
-        return self.score_head(fused)
 
-    def forward_single_head(self, fused: torch.Tensor, attribute_name: str) -> torch.Tensor:
-        """单 head 推理（用于 test_only 按属性导出）。"""
-        if hasattr(self.score_head, "forward_single"):
-            return self.score_head.forward_single(fused, attribute_name)
-        return self.score_head(fused)
+        # ===== Statistical Stream: concat metadata after fusion =====
+        if self._stat_enabled and stat_features is not None:
+            stat = self.stat_stream(stat_features)       # (B, 128)
+            fused = torch.cat([fused, stat], dim=1)      # (B, 256+128)
+            fused = self.stat_merge(fused)               # (B, 256)
+        # ==============================================================
+
+        if self._multi_head_enabled:
+            outputs = []
+            for name in self._attribute_names:
+                outputs.append(self.score_heads[name](fused))
+            return torch.cat(outputs, dim=1)
+        else:
+            return self.score_head(fused)
 
 
 def create_model(
@@ -178,16 +176,4 @@ def create_model(
     model_variant = str(model_variant).lower().strip()
     if model_type != "full":
         raise ValueError(f"Unsupported model_type for predict_p: {model_type}")
-    multi_head = bool(config.get("MULTI_HEAD", False))
-    attribute_names = config.get("ATTRIBUTE_HEAD_NAMES", None) or None
-    use_face_only = bool(config.get("ABLATION_FACE_ONLY", False))
-    fusion_type = str(config.get("ABLATION_FUSION_TYPE", "gated")).lower().strip()
-    return PredictPNetwork(
-        config,
-        use_attention=use_attention,
-        model_variant=model_variant,
-        multi_head=multi_head,
-        attribute_names=attribute_names,
-        use_face_only=use_face_only,
-        fusion_type=fusion_type,
-    )
+    return PredictPNetwork(config, use_attention=use_attention, model_variant=model_variant)

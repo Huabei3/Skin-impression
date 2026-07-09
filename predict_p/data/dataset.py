@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
-from torch.utils.data.dataloader import default_collate
 from PIL import Image
 import torchvision.transforms as transforms
 import torchvision.transforms.functional as F
@@ -43,16 +42,14 @@ class FacialPreferenceDataset(Dataset):
                  allowed_scenes: Optional[List] = None,
                  valid_prefixes: Optional[List[str]] = None,
                  test_prefixes: Optional[List[str]] = None,
-                 split_export_path: Optional[str] = None,
-                 attribute_gt_paths: Optional[Dict[str, Path]] = None,
-                 nan_handling: str = "fallback_0.5"):
+                 split_export_path: Optional[str] = None):
         """
         初始化数据集
         
         Args:
             face_rgb_root: 人脸RGB图像根目录
             face_uv_root: 人脸UV数据根目录
-            gt_excel_path: GT Excel文件路径（主 GT，用于切分和 preference_score）
+            gt_excel_path: GT Excel文件路径
             split: 数据集划分 ('train', 'val', 'test')
             transform: 图像变换
             seed: 随机种子
@@ -62,13 +59,6 @@ class FacialPreferenceDataset(Dataset):
             valid_prefixes: manual_prefix策略下进入valid的original_name前缀列表
             test_prefixes: manual_prefix策略下进入test的original_name前缀列表
             split_export_path: 划分结果导出xlsx路径（None不导出）
-            attribute_gt_paths: 多属性 GT 文件路径字典，key=属性名, value=Path。
-                               例如: {"02Attractiveness": Path(".../toMax_gt_02Attractiveness.xlsx"), ...}
-                               仅在 multi_head 模式下使用；None 表示单 head 模式。
-            nan_handling: 多属性 GT 缺失时的处理策略。
-                          - "fallback_0.5": 缺失属性填 0.5，样本保留（默认）
-                          - "skip_sample": 任意属性缺失 → 丢弃整个样本
-                          - "loss_mask": 缺失属性填 0.0，输出 valid_mask，loss 中忽略 NaN 位置
         """
         self.face_rgb_root = Path(face_rgb_root)
         self.face_uv_root = Path(face_uv_root)
@@ -90,11 +80,6 @@ class FacialPreferenceDataset(Dataset):
         self.allowed_scenes = self._normalize_scenes(allowed_scenes)
         self.allowed_scenes_set = set(self.allowed_scenes) if self.allowed_scenes is not None else None
         
-        # 多属性 GT 路径
-        self.attribute_gt_paths = attribute_gt_paths or {}
-        self.nan_handling = nan_handling  # fallback_0.5 | skip_sample | loss_mask
-        self._attribute_gt_caches: Dict[str, Dict] = {}  # lazy cache: {attr_name: {original_name: score}}
-        
         # 设置数据集划分比例
         self.train_ratio = train_ratio
         self.val_ratio = val_ratio
@@ -102,6 +87,12 @@ class FacialPreferenceDataset(Dataset):
         
         # 加载数据
         self.data_items = self._load_data()
+
+        # Phase 0: 预计算 Statistical Stream 特征（scene_type, CCT, illuminance, ethnicity, gender）
+        from predict_p.models.stat_stream import extract_metadata as _extract_stat
+        for item in self.data_items:
+            oname = item.get("original_name", "")
+            item["stat_features"] = _extract_stat(oname) if oname else torch.zeros(11)
 
         # 如有需要，按编号过滤（基于子文件夹名/Sheet名，例如 f01i/m01r）
         if self.allowed_ids is not None:
@@ -202,44 +193,6 @@ class FacialPreferenceDataset(Dataset):
         
         logger.info(f"Total loaded samples: {len(data_items)}")
         return data_items
-
-    def _load_attribute_gt(self, attr_name: str) -> Dict[str, float]:
-        """懒加载某个属性的 GT 值，返回 {original_name: score} 字典。
-
-        方案 A：从独立 xlsx 中按 original_name 查找 GT 值。
-        xlsx 结构：每个 sheet 第 1 列=original_name，第 2 列=score。
-        """
-        if attr_name in self._attribute_gt_caches:
-            return self._attribute_gt_caches[attr_name]
-
-        gt_path = self.attribute_gt_paths.get(attr_name)
-        if gt_path is None:
-            logger.warning(f"No GT file for attribute: {attr_name}, using NaN")
-            self._attribute_gt_caches[attr_name] = {}
-            return {}
-
-        gt_path = Path(gt_path)
-        if not gt_path.exists():
-            logger.warning(f"GT file not found: {gt_path}, using NaN")
-            self._attribute_gt_caches[attr_name] = {}
-            return {}
-
-        lookup: Dict[str, float] = {}
-        try:
-            excel_file = pd.ExcelFile(gt_path)
-            for sheet_name in excel_file.sheet_names:
-                df = pd.read_excel(excel_file, sheet_name=sheet_name)
-                for _, row in df.iterrows():
-                    oname = str(row.iloc[0])
-                    score = float(row.iloc[1])
-                    if np.isfinite(score):
-                        lookup[oname] = score
-        except Exception as e:
-            logger.error(f"Failed to load attribute GT {attr_name} from {gt_path}: {e}")
-
-        self._attribute_gt_caches[attr_name] = lookup
-        logger.debug(f"Loaded {len(lookup)} GT entries for attribute '{attr_name}' from {gt_path}")
-        return lookup
 
     @staticmethod
     def _normalize_ids(allowed_ids: Optional[List]) -> Optional[List[str]]:
@@ -995,43 +948,12 @@ class FacialPreferenceDataset(Dataset):
             'preference_L': preference_L,
             'preference_center': preference_center
         }
+        # Phase 0: Statistical Stream — 预计算的统计特征 (11-D tensor, no string)
+        if 'stat_features' in data_item:
+            out['stat_features'] = data_item['stat_features']
         if face_uv is not None:
             out['face_uv'] = face_uv
-
-        # --- 多属性 labels ---
-        if self.attribute_gt_paths:
-            original_name = str(data_item.get("original_name", ""))
-            attr_scores = []
-            attr_mask = []
-            for attr_name in sorted(self.attribute_gt_paths.keys()):
-                lookup = self._load_attribute_gt(attr_name)
-                val = lookup.get(original_name, float("nan"))
-                if not np.isfinite(val):
-                    if self.nan_handling == "skip_sample":
-                        return None  # GT 缺失，跳过该样本
-                    elif self.nan_handling == "loss_mask":
-                        val = 0.0
-                        attr_mask.append(0.0)
-                    else:  # fallback_0.5 (default)
-                        val = 0.5
-                        attr_mask.append(0.0)
-                else:
-                    attr_mask.append(1.0)
-                attr_scores.append(float(val))
-            if attr_scores:
-                out['attribute_scores'] = torch.tensor(attr_scores, dtype=torch.float32)
-                out['attribute_mask'] = torch.tensor(attr_mask, dtype=torch.float32)
-
         return out
-
-
-def _collate_filter_none(batch):
-    """过滤 __getitem__ 返回 None 的样本（GT为NaN）。"""
-    batch = [b for b in batch if b is not None]
-    if not batch:
-        # 返回空 batch 而非 None，避免 DataLoader worker 内部 default_collate(None) 崩溃
-        return {"face_rgb": torch.empty(0), "target_score": torch.empty(0)}
-    return default_collate(batch)
 
 
 def get_data_transforms(config: Dict, split: str = 'train') -> transforms.Compose:
@@ -1127,24 +1049,6 @@ def create_data_loaders(config: Dict) -> Tuple[DataLoader, DataLoader, DataLoade
     if norm_test_ids is None and norm_train_ids is not None:
         norm_test_ids = norm_train_ids
     
-    # --- 多属性 GT 路径 ---
-    multi_head = bool(config.get("MULTI_HEAD", False))
-    attribute_names = config.get("ATTRIBUTE_HEAD_NAMES", None) or []
-    attribute_gt_dir = config.get("ATTRIBUTE_GT_DIR", None)
-    attribute_gt_paths: Optional[Dict[str, Path]] = None
-    if multi_head and attribute_names and attribute_gt_dir:
-        gt_dir = Path(attribute_gt_dir)
-        attribute_gt_paths = {}
-        for attr_name in attribute_names:
-            fname = f"toMax_gt_{attr_name}.xlsx"
-            attr_path = gt_dir / fname
-            if attr_path.exists():
-                attribute_gt_paths[attr_name] = attr_path
-            else:
-                logger.warning(f"Attribute GT file not found: {attr_path}")
-        if not attribute_gt_paths:
-            attribute_gt_paths = None
-    
     # 获取数据变换
     train_transform = get_data_transforms(config, 'train')
     val_transform = get_data_transforms(config, 'val')
@@ -1156,50 +1060,67 @@ def create_data_loaders(config: Dict) -> Tuple[DataLoader, DataLoader, DataLoade
     _train_ids = norm_train_ids
     _test_ids = norm_test_ids
     
-    # 公共参数
-    _common_kwargs = dict(
+    train_dataset = FacialPreferenceDataset(
         face_rgb_root=face_rgb_root,
         face_uv_root=face_uv_root,
         gt_excel_path=gt_excel_path,
+        split='train',
+        transform=train_transform,
         seed=random_seed,
         train_ratio=train_ratio,
         val_ratio=val_ratio,
         test_ratio=test_ratio,
+        allowed_ids=_train_ids,
         global_rgb_root=global_rgb_root,
         split_strategy=split_strategy,
         load_uv=load_uv,
         uv_is_hist=uv_is_hist,
         uv_log_ratio=uv_log_ratio,
         allowed_scenes=allowed_scenes,
-        attribute_gt_paths=attribute_gt_paths,
-        nan_handling=config.get("NAN_HANDLING", "fallback_0.5"),
-    )
-    
-    train_dataset = FacialPreferenceDataset(
-        **_common_kwargs,
-        split='train',
-        transform=train_transform,
-        allowed_ids=_train_ids,
         valid_prefixes=valid_prefixes,
         test_prefixes=test_prefixes,
         split_export_path=split_export_path,  # 只在 train 时导出
     )
     
     val_dataset = FacialPreferenceDataset(
-        **_common_kwargs,
+        face_rgb_root=face_rgb_root,
+        face_uv_root=face_uv_root,
+        gt_excel_path=gt_excel_path,
         split='val',
         transform=val_transform,
+        seed=random_seed,
+        train_ratio=train_ratio,
+        val_ratio=val_ratio,
+        test_ratio=test_ratio,
         allowed_ids=_train_ids,
+        global_rgb_root=global_rgb_root,
+        split_strategy=split_strategy,
+        load_uv=load_uv,
+        uv_is_hist=uv_is_hist,
+        uv_log_ratio=uv_log_ratio,
+        allowed_scenes=allowed_scenes,
         valid_prefixes=valid_prefixes,
         test_prefixes=test_prefixes,
         split_export_path=None,  # 不重复导出
     )
     
     test_dataset = FacialPreferenceDataset(
-        **_common_kwargs,
+        face_rgb_root=face_rgb_root,
+        face_uv_root=face_uv_root,
+        gt_excel_path=gt_excel_path,
         split='test',
         transform=test_transform,
+        seed=random_seed,
+        train_ratio=train_ratio,
+        val_ratio=val_ratio,
+        test_ratio=test_ratio,
         allowed_ids=_test_ids,
+        global_rgb_root=global_rgb_root,
+        split_strategy=split_strategy,
+        load_uv=load_uv,
+        uv_is_hist=uv_is_hist,
+        uv_log_ratio=uv_log_ratio,
+        allowed_scenes=allowed_scenes,
         valid_prefixes=valid_prefixes,
         test_prefixes=test_prefixes,
         split_export_path=None,  # 不重复导出
@@ -1214,8 +1135,7 @@ def create_data_loaders(config: Dict) -> Tuple[DataLoader, DataLoader, DataLoade
         pin_memory=pin_memory,
         persistent_workers=persistent_workers,
         prefetch_factor=prefetch_factor,
-        drop_last=True,  # 丢弃最后一个不完整的batch
-        collate_fn=_collate_filter_none,  # 过滤GT为NaN的样本
+        drop_last=True  # 丢弃最后一个不完整的batch
     )
     
     val_loader = DataLoader(

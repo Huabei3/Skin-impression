@@ -98,39 +98,75 @@ def compute_uv_histogram(
 
 
 class RGBBranch(nn.Module):
-    def __init__(self, backbone: str = "resnet50", pretrained: bool = True, feature_dim: int = 512) -> None:
+    def __init__(self, backbone: str = "resnet50", pretrained: bool = True, feature_dim: int = 512,
+                 freeze_backbone: bool = False) -> None:
         super().__init__()
 
         if backbone == "resnet50":
             net = models.resnet50(pretrained=pretrained)
             in_features = net.fc.in_features
-            self.backbone = nn.Sequential(*list(net.children())[:-1])
+            self.backbone_raw = nn.Sequential(*list(net.children())[:-1])
+            self._needs_projection = True
+            self._in_features = in_features
         elif backbone == "efficientnet_b0":
             net = models.efficientnet_b0(pretrained=pretrained)
             in_features = net.classifier[1].in_features
             net.classifier = nn.Identity()
-            self.backbone = net
+            self.backbone_raw = net
+            self._needs_projection = True
+            self._in_features = in_features
         elif backbone == "simple_cnn":
-            self.backbone = SimpleCNNBackbone(in_channels=3, out_dim=int(feature_dim))
+            from .backbones import SimpleCNNBackbone as _SimpleCNN
+            self.backbone_raw = _SimpleCNN(in_channels=3, out_dim=int(feature_dim))
             self.feature_projector = nn.Identity()
             self.feature_dim = int(feature_dim)
+            self._needs_projection = False
             return
+        # ===== Phase 0 新增: MobileNetV3 / ViT / Swin / CLIP =====
+        elif backbone in ("mobilenet_v3_small", "mobilenet_v3_large",
+                          "vit_b_16", "swin_t", "clip_vit_b32"):
+            from .backbones import create_backbone as _create_backbone
+            bb = _create_backbone(
+                backbone_name=backbone, pretrained=pretrained,
+                feature_dim=int(feature_dim), freeze=freeze_backbone,
+            )
+            self.backbone_raw = bb
+            self.feature_projector = nn.Identity()
+            self.feature_dim = int(feature_dim)
+            self._needs_projection = False
+            return
+        # ============================================================
         else:
             raise ValueError(f"Unsupported RGB backbone: {backbone}")
 
+        # 需要额外 projection 的 backbone (resnet50, efficientnet_b0)
         self.feature_projector = nn.Sequential(
-            nn.Linear(in_features, feature_dim),
+            nn.Linear(self._in_features, feature_dim),
             nn.BatchNorm1d(feature_dim),
             nn.ReLU(inplace=True),
             nn.Dropout(0.2),
         )
         self.feature_dim = feature_dim
+        self._needs_projection = True
+
+        if freeze_backbone:
+            self.freeze_backbone()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        feats = self.backbone(x)
+        feats = self.backbone_raw(x)
         if feats.ndim == 4:
             feats = feats.view(feats.size(0), -1)
         return self.feature_projector(feats)
+
+    def freeze_backbone(self) -> None:
+        """冻结 backbone 参数，仅训练 projection head。"""
+        for p in self.backbone_raw.parameters():
+            p.requires_grad_(False)
+
+    def unfreeze_backbone(self) -> None:
+        """解冻 backbone 参数。"""
+        for p in self.backbone_raw.parameters():
+            p.requires_grad_(True)
 
 
 class DWSeparableBlock(nn.Module):
@@ -475,6 +511,7 @@ class FaceStreamV3(nn.Module):
             backbone=face_cfg["rgb_backbone"],
             pretrained=face_cfg.get("rgb_pretrained", False),
             feature_dim=int(face_cfg.get("rgb_feature_dim", 256)),
+            freeze_backbone=bool(face_cfg.get("freeze_backbone", False)),
         )
 
         rgb_dim = int(face_cfg.get("rgb_feature_dim", 256))

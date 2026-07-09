@@ -46,6 +46,8 @@ class Trainer:
         # 多 head 标记
         self._multi_head = bool(self.config.get("MULTI_HEAD", False)) and self.model.is_multi_head
         self._attribute_names = list(self.model.attribute_names) if self._multi_head else []
+        # Statistical Stream
+        self._stat_enabled = bool(self.config.get("ABLATION_STAT_STREAM", False))
 
         self._setup_optimizer()
         self._setup_scheduler()
@@ -159,13 +161,16 @@ class Trainer:
             attr_mask = batch.get("attribute_mask", None)
             if attr_mask is not None:
                 attr_mask = attr_mask.to(self.device, non_blocking=True)
+            stat_features = batch.get("stat_features", None)
+            if stat_features is not None:
+                stat_features = stat_features.to(self.device, non_blocking=True)
             face_uv = None if str(self.config.get("MODEL_VARIANT", "v1")).lower().strip() == "v3" else batch["face_uv"].to(self.device, non_blocking=True)
 
             self.optimizer.zero_grad(set_to_none=True)
 
             if self.scaler:
                 with autocast():
-                    pred_logits = self.model(face_rgb, face_uv, global_rgb)
+                    pred_logits = self.model(face_rgb, face_uv, global_rgb, stat_features=stat_features)
                     pred_logits = torch.nan_to_num(pred_logits, nan=0.0, posinf=1e6, neginf=-1e6)
                     loss, loss_dict = self.criterion(pred_logits, target_score, attr_mask)
                 self.scaler.scale(loss).backward()
@@ -174,7 +179,7 @@ class Trainer:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
-                pred_logits = self.model(face_rgb, face_uv, global_rgb)
+                pred_logits = self.model(face_rgb, face_uv, global_rgb, stat_features=stat_features)
                 pred_logits = torch.nan_to_num(pred_logits, nan=0.0, posinf=1e6, neginf=-1e6)
                 loss, loss_dict = self.criterion(pred_logits, target_score, attr_mask)
                 loss.backward()
@@ -217,9 +222,12 @@ class Trainer:
             face_rgb = batch["face_rgb"].to(self.device, non_blocking=True)
             global_rgb = batch.get("global_rgb", face_rgb).to(self.device, non_blocking=True)
             target_score = self._get_target_from_batch(batch)
+            stat_features = batch.get("stat_features", None)
+            if stat_features is not None:
+                stat_features = stat_features.to(self.device, non_blocking=True)
             face_uv = None if str(self.config.get("MODEL_VARIANT", "v1")).lower().strip() == "v3" else batch["face_uv"].to(self.device, non_blocking=True)
 
-            pred_logits = self.model(face_rgb, face_uv, global_rgb)
+            pred_logits = self.model(face_rgb, face_uv, global_rgb, stat_features=stat_features)
             pred_logits = torch.nan_to_num(pred_logits, nan=0.0, posinf=1e6, neginf=-1e6)
             loss, _ = self.criterion(pred_logits, target_score)
             if torch.isfinite(loss):
@@ -328,8 +336,11 @@ class Trainer:
             face_rgb = batch["face_rgb"].to(self.device, non_blocking=True)
             global_rgb = batch.get("global_rgb", face_rgb).to(self.device, non_blocking=True)
             target_score = self._get_target_from_batch(batch)
+            stat_features = batch.get("stat_features", None)
+            if stat_features is not None:
+                stat_features = stat_features.to(self.device, non_blocking=True)
             face_uv = None if str(self.config.get("MODEL_VARIANT", "v1")).lower().strip() == "v3" else batch["face_uv"].to(self.device, non_blocking=True)
-            pred_logits = self.model(face_rgb, face_uv, global_rgb)
+            pred_logits = self.model(face_rgb, face_uv, global_rgb, stat_features=stat_features)
 
             # 多 head 时只取第 0 个（preference_score）计算 metrics
             if self._multi_head and pred_logits.shape[1] > 1:

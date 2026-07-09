@@ -123,15 +123,28 @@ def main() -> None:
     parser.add_argument("--model-variant", choices=["v1", "v2", "v3"], default=None, help="Select model variant")
     parser.add_argument(
         "--rgb-backbone",
-        choices=["simple_cnn", "resnet50", "efficientnet_b0"],
+        choices=["simple_cnn", "resnet50", "efficientnet_b0",
+                 "mobilenet_v3_small", "mobilenet_v3_large",
+                 "vit_b_16", "swin_t", "clip_vit_b32"],
         default=None,
-        help="Face RGB backbone",
+        help="Face RGB backbone. simple_cnn=lightweight(no pretrain), "
+             "resnet50/efficientnet_b0=torchvision(pretrained), "
+             "mobilenet_v3_small/large=torchvision(pretrained), "
+             "vit_b_16/swin_t=timm(frozen by default), "
+             "clip_vit_b32=open_clip(frozen by default)",
     )
     parser.add_argument(
         "--global-backbone",
         choices=["simple_cnn", "resnet50", "mobilenet_v3_small", "mobilenet_v3_large", "efficientnet_b0"],
         default=None,
         help="Global image backbone",
+    )
+    parser.add_argument(
+        "--freeze-backbone",
+        action="store_true",
+        default=False,
+        help="Freeze face RGB backbone (only train head + fusion + global). "
+             "Recommended for ViT/CLIP backbones.",
     )
     parser.add_argument(
         "--no-pretrained",
@@ -225,9 +238,19 @@ def main() -> None:
     parser.add_argument(
         "--ablation-fusion-type",
         type=str,
-        choices=["gated", "concat"],
+        choices=["gated", "concat", "se_gated", "cross_attn"],
         default=None,
-        help="Ablation-2: Fusion type. 'gated' (default) or 'concat' (simple concat + MLP).",
+        help="Ablation-2: Fusion type. 'gated' (default), 'concat' (simple concat+MLP), "
+             "'se_gated' (SE recalibration + gated), 'cross_attn' (bidirectional cross-attention).",
+    )
+    parser.add_argument(
+        "--ablation-stat-stream",
+        action="store_true",
+        default=False,
+        help="Ablation-5 (Statistical Stream): Enable scene/portrait metadata stream. "
+             "Extracts scene type, CCT, illuminance, ethnicity, gender from original_name "
+             "and fuses with visual features before prediction head. "
+             "Default: disabled (matches STIM-CNN baseline).",
     )
     # Ablation-3: 直接用 --rgb-backbone resnet50 --global-backbone resnet50，无需额外参数
     # ===================================
@@ -292,6 +315,18 @@ def main() -> None:
         config["MODEL"]["global_stream"]["backbone"] = args.global_backbone
         if args.global_backbone == "simple_cnn":
             config["MODEL"]["global_stream"]["pretrained"] = False
+    # Phase 0: freeze_backbone 逻辑 —— 通过 --freeze-backbone 参数控制
+    # 默认: ViT/Swin/CLIP 自动 freeze; simple_cnn/MobileNet/resnet 不 freeze
+    # --freeze-backbone 显式指定时，对所有 backbone 生效
+    if bool(args.freeze_backbone):
+        config["MODEL"]["face_stream"]["freeze_backbone"] = True
+    else:
+        # 自动检测: ViT/Swin/CLIP 默认冻结
+        _fn_backbone = str(config["MODEL"]["face_stream"].get("rgb_backbone", ""))
+        if _fn_backbone in ("vit_b_16", "swin_t", "clip_vit_b32"):
+            config["MODEL"]["face_stream"]["freeze_backbone"] = True
+        else:
+            config["MODEL"]["face_stream"]["freeze_backbone"] = False
     if bool(args.no_pretrained):
         config["MODEL"]["face_stream"]["rgb_pretrained"] = False
         config["MODEL"]["global_stream"]["pretrained"] = False
@@ -303,6 +338,8 @@ def main() -> None:
         config["ABLATION_FACE_ONLY"] = True
     if args.ablation_fusion_type is not None:
         config["ABLATION_FUSION_TYPE"] = str(args.ablation_fusion_type)
+    if bool(args.ablation_stat_stream):
+        config["ABLATION_STAT_STREAM"] = True
     # Ablation-3: --rgb-backbone resnet50 + --global-backbone resnet50 自动启用 pretrained
     if args.rgb_backbone == "resnet50" or args.global_backbone == "resnet50":
         # resnet50 默认用 pretrained=True（除非显式指定 --no-pretrained）
