@@ -109,6 +109,21 @@ class PredictPNetwork(nn.Module):
             self._attribute_names = []
         # ====================================
 
+        # ===== A9: Lab center regression heads =====
+        self._lab_center_enabled = bool(config.get("ABLATION_LAB_CENTER", False))
+        if self._lab_center_enabled and self._multi_head_enabled:
+            center_cfg = config["MODEL"]["prediction_heads"].get("lab_center",
+                          config["MODEL"]["prediction_heads"]["preference_score"])
+            centers = {}
+            for name in self._attribute_names:
+                centers[name] = ScoreHead(
+                    input_dim=head_input_dim,
+                    hidden_dims=list(center_cfg.get("hidden_dims", [128, 64])),
+                    output_dim=3,  # L*, a*, b*
+                )
+            self.center_heads = nn.ModuleDict(centers)
+        # ============================================
+
         self._initialize_weights()
 
     @property
@@ -160,7 +175,14 @@ class PredictPNetwork(nn.Module):
             outputs = []
             for name in self._attribute_names:
                 outputs.append(self.score_heads[name](fused))
-            return torch.cat(outputs, dim=1)
+            scores =  torch.cat(outputs, dim=1)  # (B, N_attrs)
+            if self._lab_center_enabled:
+                center_outs = []
+                for name in self._attribute_names:
+                    center_outs.append(self.center_heads[name](fused))
+                centers = torch.cat(center_outs, dim=1)  # (B, N_attrs*3)
+                return scores, centers
+            return scores
         else:
             return self.score_head(fused)
 

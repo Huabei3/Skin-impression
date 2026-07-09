@@ -145,14 +145,17 @@ class FacialPreferenceDataset(Dataset):
                 a_star = float(row.iloc[3])
                 b_star = float(row.iloc[4])
 
+                # A9: (50, 0, 0) = placeholder missing Lab → NaN
+                if abs(l_star - 50.0) < 0.01 and abs(a_star) < 0.01 and abs(b_star) < 0.01:
+                    l_star = np.nan; a_star = np.nan; b_star = np.nan
+
                 # 过滤无效标注（NaN/Inf）
-                if not np.isfinite(preference_score) or not np.isfinite(a_star) or not np.isfinite(b_star):
-                    logger.warning(f"Skip row with invalid labels in sheet '{sheet_name}', index {idx}:")
-                    logger.warning(f"  score={preference_score}, a*={a_star}, b*={b_star}")
+                if not np.isfinite(preference_score):
                     continue
                 if not np.isfinite(l_star):
-                    # 若 GT 缺失 L*，回退到常用参考值，避免整个样本被丢弃
-                    l_star = 50.0
+                    l_star = np.nan  # keep sample, mask in loss
+                if not np.isfinite(a_star) or not np.isfinite(b_star):
+                    a_star = np.nan; b_star = np.nan  # keep sample, mask in loss
                 
                 # 构建文件路径
                 # 人脸RGB文件：原名_face.jpg

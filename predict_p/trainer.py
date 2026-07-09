@@ -48,6 +48,10 @@ class Trainer:
         self._attribute_names = list(self.model.attribute_names) if self._multi_head else []
         # Statistical Stream
         self._stat_enabled = bool(self.config.get("ABLATION_STAT_STREAM", False))
+        # A9: Lab center regression
+        self._lab_center = bool(self.config.get("ABLATION_LAB_CENTER", False)) and self._multi_head
+        if self._lab_center:
+            self.center_l1 = nn.L1Loss(reduction="none")
 
         self._setup_optimizer()
         self._setup_scheduler()
@@ -144,6 +148,52 @@ class Trainer:
             return batch["attribute_scores"].to(self.device, non_blocking=True)
         return batch["preference_score"].to(self.device, non_blocking=True)
 
+    def _get_center_from_batch(self, batch: Dict) -> Optional[torch.Tensor]:
+        """A9: 获取 Lab 色度中心 GT，(B, 3*N_attrs)。NaN 处用 0 填充，由 mask 控制。"""
+        L = batch.get("preference_L", None)
+        center = batch.get("preference_center", None)
+        if L is None or center is None:
+            return None
+        L = L.to(self.device, non_blocking=True)                        # (B, 1)
+        ab = center.to(self.device, non_blocking=True)                   # (B, 2)
+        lab = torch.cat([L, ab], dim=1)                                  # (B, 3)
+        lab = torch.nan_to_num(lab, nan=0.0)
+        # multi-head: replicate for each attr
+        if self._multi_head and lab.shape[1] == 3:
+            lab = lab.repeat(1, len(self._attribute_names))             # (B, 3*N)
+        return lab
+
+    def _get_center_mask_from_batch(self, batch: Dict) -> Optional[torch.Tensor]:
+        """A9: 中心 GT 的 mask，NaN → mask=0。"""
+        L = batch.get("preference_L", None)
+        center = batch.get("preference_center", None)
+        if L is None or center is None:
+            return None
+        L = L.to(self.device, non_blocking=True)
+        ab = center.to(self.device, non_blocking=True)
+        lab = torch.cat([L, ab], dim=1)                                  # (B, 3)
+        mask = torch.isfinite(lab).float()                               # 1=valid, 0=NaN
+        if self._multi_head:
+            mask = mask.repeat(1, len(self._attribute_names))           # (B, 3*N)
+        return mask
+
+    def _compute_loss(self, pred_logits, target_score, attr_mask,
+                      pred_centers=None, target_center=None, center_mask=None):
+        """Unified loss: score loss + optional center loss."""
+        loss, loss_dict = self.criterion(pred_logits, target_score, attr_mask)
+        if pred_centers is not None and target_center is not None:
+            center_l1 = self.center_l1(pred_centers, target_center)      # (B, 3*N)
+            if center_mask is not None:
+                n_valid = center_mask.sum().clamp_min(1)
+                center_loss = (center_l1 * center_mask).sum() / n_valid
+            else:
+                center_loss = center_l1.mean()
+            # λ = 0.3 for center (balanced with score loss)
+            center_weight = float(self.config.get("LOSS", {}).get("center_weight", 0.3))
+            loss = loss + center_weight * center_loss
+            loss_dict["center"] = float(center_loss.item())
+        return loss, loss_dict
+
     def train_epoch(self, epoch: int) -> Dict[str, float]:
         self.model.train()
         total_loss = 0.0
@@ -168,20 +218,27 @@ class Trainer:
 
             self.optimizer.zero_grad(set_to_none=True)
 
+            if self._lab_center:
+                model_out = self.model(face_rgb, face_uv, global_rgb, stat_features=stat_features)
+                pred_logits, pred_centers = model_out
+                target_center = self._get_center_from_batch(batch)
+                center_mask = self._get_center_mask_from_batch(batch)
+            else:
+                pred_logits = self.model(face_rgb, face_uv, global_rgb, stat_features=stat_features)
+                target_center = None; center_mask = None
+
+            pred_logits = torch.nan_to_num(pred_logits, nan=0.0, posinf=1e6, neginf=-1e6)
+
             if self.scaler:
                 with autocast():
-                    pred_logits = self.model(face_rgb, face_uv, global_rgb, stat_features=stat_features)
-                    pred_logits = torch.nan_to_num(pred_logits, nan=0.0, posinf=1e6, neginf=-1e6)
-                    loss, loss_dict = self.criterion(pred_logits, target_score, attr_mask)
+                    loss, loss_dict = self._compute_loss(pred_logits, target_score, attr_mask, pred_centers, target_center, center_mask)
                 self.scaler.scale(loss).backward()
                 self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), float(self.config["TRAINING"].get("gradient_clip", 1.0)))
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
-                pred_logits = self.model(face_rgb, face_uv, global_rgb, stat_features=stat_features)
-                pred_logits = torch.nan_to_num(pred_logits, nan=0.0, posinf=1e6, neginf=-1e6)
-                loss, loss_dict = self.criterion(pred_logits, target_score, attr_mask)
+                loss, loss_dict = self._compute_loss(pred_logits, target_score, attr_mask, pred_centers, target_center, center_mask)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), float(self.config["TRAINING"].get("gradient_clip", 1.0)))
                 self.optimizer.step()
@@ -227,7 +284,11 @@ class Trainer:
                 stat_features = stat_features.to(self.device, non_blocking=True)
             face_uv = None if str(self.config.get("MODEL_VARIANT", "v1")).lower().strip() == "v3" else batch["face_uv"].to(self.device, non_blocking=True)
 
-            pred_logits = self.model(face_rgb, face_uv, global_rgb, stat_features=stat_features)
+            model_out = self.model(face_rgb, face_uv, global_rgb, stat_features=stat_features)
+            if self._lab_center:
+                pred_logits = model_out[0]
+            else:
+                pred_logits = model_out
             pred_logits = torch.nan_to_num(pred_logits, nan=0.0, posinf=1e6, neginf=-1e6)
             loss, _ = self.criterion(pred_logits, target_score)
             if torch.isfinite(loss):

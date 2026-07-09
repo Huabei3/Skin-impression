@@ -145,7 +145,13 @@ def run_test_with_metadata(trainer: Trainer, ckpt_path: str = None, split: str =
                 face_uv = batch["face_uv"].to(trainer.device, non_blocking=True)
 
             with scaler_ctx:
-                pred_logits = trainer.model(face_rgb, face_uv, global_rgb, stat_features=stat_features)
+                model_out = trainer.model(face_rgb, face_uv, global_rgb, stat_features=stat_features)
+
+            # A9: handle tuple (scores, centers)
+            if isinstance(model_out, tuple):
+                pred_logits = model_out[0]
+            else:
+                pred_logits = model_out
 
             all_pred.append(torch.sigmoid(pred_logits).cpu())
 
@@ -368,6 +374,8 @@ def main():
     parser.add_argument("--ablation-fusion-type", type=str,
                         choices=["gated", "concat", "se_gated", "cross_attn"], default=None)
     parser.add_argument("--ablation-stat-stream", action="store_true", default=False)
+    parser.add_argument("--ablation-lab-center", action="store_true", default=False)
+    parser.add_argument("--ablation-loss-type", type=str, choices=["mse", "bce_smooth_l1"], default=None)
     parser.add_argument("--multi-head", action="store_true", default=False)
     parser.add_argument("--attributes", type=str, default=None)
     parser.add_argument("--exp-name", type=str, default=None)
@@ -405,6 +413,10 @@ def main():
         config["ABLATION_FUSION_TYPE"] = str(args.ablation_fusion_type)
     if bool(args.ablation_stat_stream):
         config["ABLATION_STAT_STREAM"] = True
+    if bool(args.ablation_lab_center):
+        config["ABLATION_LAB_CENTER"] = True
+    if args.ablation_loss_type is not None:
+        config["ABLATION_LOSS_TYPE"] = str(args.ablation_loss_type)
     if bool(args.multi_head):
         config["MULTI_HEAD"] = True
         if args.attributes is None or str(args.attributes).strip().lower() == "all":

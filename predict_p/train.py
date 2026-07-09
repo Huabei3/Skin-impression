@@ -252,6 +252,23 @@ def main() -> None:
              "and fuses with visual features before prediction head. "
              "Default: disabled (matches STIM-CNN baseline).",
     )
+    parser.add_argument(
+        "--ablation-lab-center",
+        action="store_true",
+        default=False,
+        help="A9: Add Lab color center regression heads (3-dim L*a*b* per attribute). "
+             "GT loaded from toMax_gt_{attr}.xlsx L*/a*/b* columns. "
+             "Values (50,0,0) treated as NaN via loss_mask.",
+    )
+    parser.add_argument(
+        "--ablation-loss-type",
+        type=str,
+        choices=["mse", "bce_smooth_l1"],
+        default=None,
+        help="A10: Loss function type. "
+             "'mse' = MSE + Pearson (default, STIM-CNN baseline). "
+             "'bce_smooth_l1' = BCE+SmoothL1 + L1(center) + Pearson (MS-CMAN style).",
+    )
     # Ablation-3: 直接用 --rgb-backbone resnet50 --global-backbone resnet50，无需额外参数
     # ===================================
     parser.add_argument(
@@ -340,6 +357,14 @@ def main() -> None:
         config["ABLATION_FUSION_TYPE"] = str(args.ablation_fusion_type)
     if bool(args.ablation_stat_stream):
         config["ABLATION_STAT_STREAM"] = True
+    if bool(args.ablation_lab_center):
+        config["ABLATION_LAB_CENTER"] = True
+    if args.ablation_loss_type is not None:
+        config["ABLATION_LOSS_TYPE"] = str(args.ablation_loss_type)
+    # A10: bce_smooth_l1 mode → disable extreme weighting (MS-CMAN style)
+    if str(config.get("ABLATION_LOSS_TYPE", "")) == "bce_smooth_l1":
+        config.setdefault("LOSS", {})
+        config["LOSS"]["extreme_weighting"] = {"enabled": False}
     # Ablation-3: --rgb-backbone resnet50 + --global-backbone resnet50 自动启用 pretrained
     if args.rgb_backbone == "resnet50" or args.global_backbone == "resnet50":
         # resnet50 默认用 pretrained=True（除非显式指定 --no-pretrained）
