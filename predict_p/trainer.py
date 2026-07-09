@@ -182,14 +182,17 @@ class Trainer:
         """Unified loss: score loss + optional center loss."""
         loss, loss_dict = self.criterion(pred_logits, target_score, attr_mask)
         if pred_centers is not None and target_center is not None:
+            # normalise: clamp(C/128, -1, 1) as MS-CMAN
+            pred_centers = torch.clamp(pred_centers / 128.0, -1.0, 1.0)
+            target_center = torch.clamp(target_center / 128.0, -1.0, 1.0)
             center_l1 = self.center_l1(pred_centers, target_center)      # (B, 3*N)
             if center_mask is not None:
                 n_valid = center_mask.sum().clamp_min(1)
                 center_loss = (center_l1 * center_mask).sum() / n_valid
             else:
                 center_loss = center_l1.mean()
-            # λ = 0.3 for center (balanced with score loss)
-            center_weight = float(self.config.get("LOSS", {}).get("center_weight", 0.3))
+            # λ₂=1.5 matching MS-CMAN
+            center_weight = float(self.config.get("LOSS", {}).get("center_weight", 1.5))
             loss = loss + center_weight * center_loss
             loss_dict["center"] = float(center_loss.item())
         return loss, loss_dict

@@ -361,10 +361,12 @@ def main() -> None:
         config["ABLATION_LAB_CENTER"] = True
     if args.ablation_loss_type is not None:
         config["ABLATION_LOSS_TYPE"] = str(args.ablation_loss_type)
-    # A10: bce_smooth_l1 mode → disable extreme weighting (MS-CMAN style)
+    # A10: bce_smooth_l1 mode (MS-CMAN style: BCE+SmoothL1+L1(center)+Pearson with extreme weighting)
+    # Note: extreme weighting is KEPT (MS-CMAN uses it, see Max_Part eq. W_i formula)
+    # A10 differs from default only by requiring --ablation-lab-center (enforced below)
     if str(config.get("ABLATION_LOSS_TYPE", "")) == "bce_smooth_l1":
         config.setdefault("LOSS", {})
-        config["LOSS"]["extreme_weighting"] = {"enabled": False}
+        # Keep extreme weighting as per MS-CMAN
     # Ablation-3: --rgb-backbone resnet50 + --global-backbone resnet50 自动启用 pretrained
     if args.rgb_backbone == "resnet50" or args.global_backbone == "resnet50":
         # resnet50 默认用 pretrained=True（除非显式指定 --no-pretrained）
