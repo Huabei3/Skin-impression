@@ -1,0 +1,11 @@
+gao_data_*/
+*.pdf
+data_check/
+output/
+*.pth
+*.pt
+*.png
+*.jpg
+*.jpeg
+__pycache__/
+*.pyc
