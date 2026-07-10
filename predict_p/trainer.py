@@ -228,7 +228,7 @@ class Trainer:
                 center_mask = self._get_center_mask_from_batch(batch)
             else:
                 pred_logits = self.model(face_rgb, face_uv, global_rgb, stat_features=stat_features)
-                target_center = None; center_mask = None
+                pred_centers = None; target_center = None; center_mask = None
 
             pred_logits = torch.nan_to_num(pred_logits, nan=0.0, posinf=1e6, neginf=-1e6)
 
