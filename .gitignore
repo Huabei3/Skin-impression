@@ -1,11 +1,6 @@
-gao_data_*/
-*.pdf
-data_check/
+gao_data_AF/ gao_data_AS/ gao_data_CA/ gao_data_SA/
 output/
 *.pth
 *.pt
-*.png
-*.jpg
-*.jpeg
 __pycache__/
 *.pyc
