@@ -65,41 +65,47 @@ def _maybe_normalize_target_score(target_score: torch.Tensor) -> torch.Tensor:
     return target_score
 
 
-def load_per_attribute_gt(gt_dir: str) -> Dict[str, Dict[str, float]]:
+def load_per_attribute_gt(gt_dir: str) -> tuple:
     """
-    从 toMax_gt_{attr}.xlsx 加载每个属性的 GT 分数。
-    返回: {original_name: {attr_name: score}}
+    从 toMax_gt_{attr}.xlsx 加载每个属性的 GT 分数和 Lab 中心。
+    返回: (name_to_scores, name_to_lab)
+      - name_to_scores: {original_name: {attr_name: score}}
+      - name_to_lab:    {original_name: {attr_name: (L, a, b)}}
     """
     gt_dir = Path(gt_dir)
     name_to_scores: Dict[str, Dict[str, float]] = {}
+    name_to_lab: Dict[str, Dict[str, tuple]] = {}
 
     for attr in ALL_ATTRIBUTES:
         fpath = gt_dir / f"toMax_gt_{attr}.xlsx"
         if not fpath.exists():
             logger.warning(f"Per-attribute GT file not found: {fpath}")
             continue
-        # 多 sheet：每个 sheet 对应一个 model（如 f01r, m08i 等）
         xls = pd.ExcelFile(fpath)
         total = 0
         for sheet_name in xls.sheet_names:
             df = pd.read_excel(xls, sheet_name=sheet_name, header=0)
-            # 列: original_name, preference_score, L*, a*, b*
-            if df.shape[1] < 2:
+            if df.shape[1] < 5:
                 continue
             for _, row in df.iterrows():
                 name = str(row.iloc[0]).strip()
                 try:
                     score = float(row.iloc[1])
+                    L = float(row.iloc[2]); a = float(row.iloc[3]); b = float(row.iloc[4])
                 except (ValueError, TypeError):
                     continue
                 if name not in name_to_scores:
                     name_to_scores[name] = {}
+                    name_to_lab[name] = {}
                 name_to_scores[name][attr] = score
+                # (50,0,0) = placeholder → NaN
+                if abs(L-50)<0.01 and abs(a)<0.01 and abs(b)<0.01:
+                    L=a=b=np.nan
+                name_to_lab[name][attr] = (L, a, b)
                 total += 1
-
         logger.info(f"  [{attr}] {total} scores from {len(xls.sheet_names)} sheets")
 
-    return name_to_scores
+    return name_to_scores, name_to_lab
 
 
 def run_test_with_metadata(trainer: Trainer, ckpt_path: str = None, split: str = "test") -> Dict:
@@ -130,7 +136,9 @@ def run_test_with_metadata(trainer: Trainer, ckpt_path: str = None, split: str =
     logger.info(f"Running inference on {split} set ({len(loader.dataset)} samples)")
 
     all_pred = []
+    all_centers = []  # A9
     all_meta = []
+    has_centers = False
     scaler_ctx = autocast() if trainer.scaler else torch.no_grad()
 
     with torch.no_grad():
@@ -149,7 +157,9 @@ def run_test_with_metadata(trainer: Trainer, ckpt_path: str = None, split: str =
 
             # A9: handle tuple (scores, centers)
             if isinstance(model_out, tuple):
-                pred_logits = model_out[0]
+                pred_logits, pred_centers = model_out
+                has_centers = True
+                all_centers.append(pred_centers.cpu())
             else:
                 pred_logits = model_out
 
@@ -168,7 +178,11 @@ def run_test_with_metadata(trainer: Trainer, ckpt_path: str = None, split: str =
     ps = ps[:n]
     all_meta = all_meta[:n]
 
-    return {"predictions": ps, "metadata": all_meta}
+    result = {"predictions": ps, "metadata": all_meta}
+    if has_centers:
+        cs = torch.cat(all_centers, dim=0).numpy()[:n]  # (N, 3*10)
+        result["centers"] = cs
+    return result
 
 
 def compute_metrics_for_column(pred_col: np.ndarray, tgt_col: np.ndarray) -> Dict[str, float]:
@@ -180,6 +194,96 @@ def compute_metrics_for_column(pred_col: np.ndarray, tgt_col: np.ndarray) -> Dic
     p = pred_col[mask]
     t = tgt_col[mask]
     return evaluate_scores(p, t)
+
+
+def compute_deltae_ciede2000(lab_pred: np.ndarray, lab_gt: np.ndarray) -> np.ndarray:
+    """
+    Compute CIEDE2000 between predicted and GT Lab values.
+    lab_pred: (N, 3) or list of (L,a,b) — predicted
+    lab_gt:   (N, 3) or list of (L,a,b) — ground truth
+    Returns: (N,) array of deltaE2000 values, NaN where GT is invalid.
+    """
+    try:
+        from skimage.color import deltaE_ciede2000
+    except ImportError:
+        # Fallback: simple Euclidean deltaE
+        dL = lab_pred[:, 0] - lab_gt[:, 0]
+        da = lab_pred[:, 1] - lab_gt[:, 1]
+        db = lab_pred[:, 2] - lab_gt[:, 2]
+        return np.sqrt(dL**2 + da**2 + db**2)
+    lab_pred = np.atleast_2d(lab_pred)
+    lab_gt = np.atleast_2d(lab_gt)
+    if lab_pred.shape != lab_gt.shape:
+        raise ValueError(f"Shape mismatch: pred {lab_pred.shape}, gt {lab_gt.shape}")
+    de = np.full(lab_pred.shape[0], np.nan)
+    for i in range(lab_pred.shape[0]):
+        if np.isfinite(lab_gt[i]).all():
+            de[i] = deltaE_ciede2000(lab_pred[i], lab_gt[i])
+    return de
+
+
+def write_deltae_sheets(wb, suffix, pred_lab_arr, gt_lab_arr, metadata, header_font, header_fill, thin_border):
+    """Add deltaE2000 Overall + PerGroup + RawData sheets."""
+    import openpyxl as xl
+
+    de = compute_deltae_ciede2000(pred_lab_arr, gt_lab_arr)
+    valid = np.isfinite(de)
+    if not valid.any():
+        return
+
+    def write_header(ws, headers, row=1):
+        for ci, h in enumerate(headers, 1):
+            c = ws.cell(row=row, column=ci, value=h)
+            c.font = header_font; c.fill = header_fill; c.border = thin_border
+
+    # Overall deltaE
+    ws_o = wb.create_sheet(f"DeltaE{suffix}")
+    de_mean = np.mean(de[valid])
+    de_med = np.median(de[valid])
+    de_max = np.max(de[valid])
+    de_min = np.min(de[valid])
+    write_header(ws_o, ["Metric", "Value"])
+    for ri, (k, v) in enumerate([("mean_DE2000", de_mean), ("median_DE2000", de_med),
+                                  ("max_DE2000", de_max), ("min_DE2000", de_min),
+                                  ("n_valid", int(valid.sum())), ("n_total", len(de))], 2):
+        ws_o.cell(row=ri, column=1, value=k).border = thin_border
+        ws_o.cell(row=ri, column=2, value=round(v, 6) if isinstance(v, float) else v).border = thin_border
+    ws_o.column_dimensions["A"].width = 20
+    ws_o.column_dimensions["B"].width = 16
+
+    # PerGroup deltaE
+    ws_p = wb.create_sheet(f"DeltaE_PerGroup{suffix}")
+    write_header(ws_p, ["Model", "iOr", "Scene", "n_samples", "mean_DE2000"])
+    groups = {}
+    for i, meta in enumerate(metadata):
+        if not np.isfinite(de[i]):
+            continue
+        model, ior, scene = _extract_model_ior_scene(meta["original_name"])
+        key = f"{model}_{ior}_{scene}"
+        if key not in groups:
+            groups[key] = {"model": model, "ior": ior, "scene": scene, "de": []}
+        groups[key]["de"].append(de[i])
+    for ri, (key, g) in enumerate(sorted(groups.items()), 2):
+        ws_p.cell(row=ri, column=1, value=g["model"]).border = thin_border
+        ws_p.cell(row=ri, column=2, value=g["ior"]).border = thin_border
+        ws_p.cell(row=ri, column=3, value=g["scene"]).border = thin_border
+        ws_p.cell(row=ri, column=4, value=len(g["de"])).border = thin_border
+        ws_p.cell(row=ri, column=5, value=round(np.mean(g["de"]), 6)).border = thin_border
+    for i, w in enumerate([8, 6, 10, 10, 14], 1):
+        ws_p.column_dimensions[xl.utils.get_column_letter(i)].width = w
+
+    # RawData deltaE
+    ws_r = wb.create_sheet(f"DeltaE_RawData{suffix}")
+    write_header(ws_r, ["original_name", "scene_person", "model", "ior", "scene", "DE2000"])
+    for ri, (meta, d) in enumerate(zip(metadata, de), 2):
+        model, ior, scene = _extract_model_ior_scene(meta["original_name"])
+        row_data = [meta["original_name"], meta["scene_person"], model, ior, scene,
+                    round(float(d), 6) if np.isfinite(d) else "N/A"]
+        for ci, val in enumerate(row_data, 1):
+            ws_r.cell(row=ri, column=ci, value=val).border = thin_border
+    for i, w in enumerate([28, 16, 8, 6, 10, 14], 1):
+        ws_r.column_dimensions[xl.utils.get_column_letter(i)].width = w
+    ws_r.freeze_panes = "A2"
 
 
 def compute_per_group_pearson(ps: np.ndarray, ts: np.ndarray, metadata: list) -> List[Dict]:
@@ -211,6 +315,7 @@ def export_to_xlsx(
     args: argparse.Namespace,
     result: Dict,
     per_attr_gt: Optional[Dict[str, Dict[str, float]]] = None,
+    per_attr_lab: Optional[Dict[str, Dict[str, tuple]]] = None,
 ) -> None:
     """导出 xlsx，multi-head 时每属性独立 sheet。"""
     import openpyxl as xl
@@ -299,34 +404,38 @@ def export_to_xlsx(
     ws1.column_dimensions["B"].width = 50
 
     # ===== Per-attribute sheets =====
+    has_centers = "centers" in result and per_attr_lab is not None
     for col_idx, attr in enumerate(attrs):
         suffix = f"_{attr}"
         pred_col = ps[:, col_idx] if is_multi else ps.flatten()
 
-        # Load GT for this attribute
+        # Load GT score for this attribute
         tgt_col = np.full(len(metadata), np.nan)
         if per_attr_gt and is_multi:
             for i, meta in enumerate(metadata):
                 name = meta["original_name"]
                 tgt_col[i] = per_attr_gt.get(name, {}).get(attr, np.nan)
-        else:
-            # single-head: use preference_score from dataset
-            # (we didn't collect targets in multi-head mode, so only available when GT loaded)
-            pass
 
         # Compute metrics
         metrics = compute_metrics_for_column(pred_col, tgt_col)
-
-        # Overall
         write_overall_sheet(wb.create_sheet(f"Overall{suffix}"), metrics)
-
-        # PerGroup
         per_group = compute_per_group_pearson(pred_col, tgt_col, metadata)
         write_pergroup_sheet(wb.create_sheet(f"PerGroup{suffix}"), per_group)
-
-        # RawData
         write_rawdata_sheet(wb.create_sheet(f"RawData{suffix}"), metadata,
                             pred_col.tolist(), tgt_col.tolist())
+
+        # deltaE2000 sheets (A9/A10 only)
+        if has_centers:
+            centers = result["centers"]  # (N, 30)
+            c_start = col_idx * 3
+            pred_lab = centers[:, c_start:c_start+3]  # (N, 3)
+            gt_lab = np.full((len(metadata), 3), np.nan)
+            for i, meta in enumerate(metadata):
+                name = meta["original_name"]
+                lab = per_attr_lab.get(name, {}).get(attr, (np.nan, np.nan, np.nan))
+                gt_lab[i] = lab
+            write_deltae_sheets(wb, suffix, pred_lab, gt_lab, metadata,
+                                header_font, header_fill, thin_border)
 
     # ===== Legacy aggregate sheets (first attr only, for backward compat) =====
     pred0 = ps[:, 0] if is_multi else ps.flatten()
@@ -447,10 +556,11 @@ def main():
 
     # 加载 per-attribute GT（multi-head 时）
     per_attr_gt = None
+    per_attr_lab = None
     if bool(args.multi_head) and args.data_root:
         gt_dir = Path(args.data_root) / "gt"
         logger.info(f"Loading per-attribute GT from {gt_dir} ...")
-        per_attr_gt = load_per_attribute_gt(str(gt_dir))
+        per_attr_gt, per_attr_lab = load_per_attribute_gt(str(gt_dir))
         logger.info(f"  Loaded GT for {len(ALL_ATTRIBUTES)} attributes × {len(per_attr_gt)} samples")
 
     # 推理
@@ -489,7 +599,7 @@ def main():
     # 导出 xlsx
     exp_dir = Path(trainer.config["OUTPUT_DIR"])
     output_xlsx = exp_dir / "results" / f"test_results.xlsx"
-    export_to_xlsx(str(output_xlsx), args, result, per_attr_gt)
+    export_to_xlsx(str(output_xlsx), args, result, per_attr_gt, per_attr_lab)
 
 
 if __name__ == "__main__":
