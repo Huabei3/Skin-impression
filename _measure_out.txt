@@ -1,0 +1,24 @@
+Device: cuda
+GPU: NVIDIA GeForce RTX 4080 SUPER
+
+=== PARAMS ===
+Total: 3,291,084
+Trainable: 3,291,084
+  face_stream: 1,305,824
+  global_stream: 1,239,520
+  fusion: 329,730
+  score_head: 416,010
+  face_stream detail: {'rgb_branch': 1239520, 'fusion': 66304}
+  global_stream detail: {'backbone': 1239520}
+  fusion detail: {'face_proj': 65792, 'global_proj': 65792, 'gate': 131842, 'out': 66304}
+  MultiScoreHead (10 heads): 416,010  per-head: 41,601
+
+=== GPU INFERENCE ===
+Batch=1: 2.6016 ms  (384 FPS)
+Batch=8: 2.7229 ms  (2938 img/s)
+
+=== TRAINING STEP (batch=16) ===
+Forward+backward: 24.74 ms/iter
+Est epoch (500 batches): 12s
+
+Done
