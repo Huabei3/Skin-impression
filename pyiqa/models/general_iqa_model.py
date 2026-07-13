@@ -1,3 +1,4 @@
+import re
 import numpy as np
 import torch
 from collections import OrderedDict
@@ -166,13 +167,14 @@ class GeneralIQAModel(BaseModel):
 
         self.log_dict = self.reduce_loss_dict(loss_dict)
 
-        # log metrics in training batch
-        pred_score = self.output_score.squeeze(1).cpu().detach().numpy()
-        gt_mos = self.gt_mos.squeeze(1).cpu().detach().numpy()
-        for name, opt_ in self.opt['val']['metrics'].items():
-            self.log_dict[f'train_metrics/{name}'] = calculate_metric(
-                [pred_score, gt_mos], opt_
-            )
+        # log metrics in training batch (skip if batch_size=1, need >=2 for correlation)
+        if self.output_score.shape[0] >= 2:
+            pred_score = self.output_score.squeeze(1).cpu().detach().numpy()
+            gt_mos = self.gt_mos.squeeze(1).cpu().detach().numpy()
+            for name, opt_ in self.opt['val']['metrics'].items():
+                self.log_dict[f'train_metrics/{name}'] = calculate_metric(
+                    [pred_score, gt_mos], opt_
+                )
 
     def test(self):
         self.net.eval()
@@ -205,12 +207,37 @@ class GeneralIQAModel(BaseModel):
 
         pred_score = []
         gt_mos = []
+        # Per-scene tracking for real-time Pearson r
+        scene_preds = {}
+        scene_gts = {}
         for idx, val_data in enumerate(dataloader):
             img_name = osp.basename(val_data['img_path'][0])
             self.feed_data(val_data)
             self.test()
             pred_score.append(self.output_score)
             gt_mos.append(self.gt_mos)
+
+            # Per-scene Pearson r: scene = "f08rrs02" from "f08rrs02_01.jpg"
+            scene_match = re.match(r'(.+?)_\d+\.jpg$', img_name)
+            if scene_match:
+                scene = scene_match.group(1)
+                if scene not in scene_preds:
+                    scene_preds[scene] = []
+                    scene_gts[scene] = []
+                scene_preds[scene].append(self.output_score.item())
+                scene_gts[scene].append(self.gt_mos.item())
+                # When scene has 33 variants, compute Pearson r
+                if len(scene_preds[scene]) == 33:
+                    import numpy as np
+                    from scipy import stats
+                    p = np.array(scene_preds[scene])
+                    g = np.array(scene_gts[scene])
+                    if p.std() > 1e-8 and g.std() > 1e-8:
+                        r, _ = stats.pearsonr(p, g)
+                    else:
+                        r = 0.0
+                    print(f'  [Val] {scene}: Pearson r={r:.4f} (iter {current_iter})')
+
             if use_pbar:
                 pbar.update(1)
                 pbar.set_description(f'Test {img_name:>20}')

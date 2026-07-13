@@ -8,7 +8,7 @@ datasets:
     name: deepskin_CA
     type: GeneralNRDataset
     dataroot_target: /root/autodl-tmp/rendered_2max
-    meta_info_file: /root/autodl-tmp/iqa_pytorch_train/datasets/deepskin/CA/meta_info.csv
+    meta_info_file: /root/autodl-tmp/iqa_pytorch_train/datasets/deepskin/global/CA/meta_info.csv
     split_index: split_name
     augment:
       resize: [256, 256]
@@ -21,7 +21,7 @@ datasets:
     name: deepskin_CA
     type: GeneralNRDataset
     dataroot_target: /root/autodl-tmp/rendered_2max
-    meta_info_file: /root/autodl-tmp/iqa_pytorch_train/datasets/deepskin/CA/meta_info.csv
+    meta_info_file: /root/autodl-tmp/iqa_pytorch_train/datasets/deepskin/global/CA/meta_info.csv
     split_index: split_name
     phase: val
 network:

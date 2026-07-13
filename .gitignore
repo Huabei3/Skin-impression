@@ -160,3 +160,17 @@ experiments/
 datasets/
 results/
 __pycache__/
+
+*.safetensors
+
+*.pt
+
+*.pkl
+
+*.tar
+
+*.tar.gz
+
+*.7z
+
+*.rar

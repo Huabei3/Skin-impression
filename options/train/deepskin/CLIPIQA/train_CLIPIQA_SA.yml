@@ -1,14 +1,14 @@
-name: MANIQA_CA_deepskin
+name: CLIPIQA_SA_deepskin
 model_type: GeneralIQAModel
 num_gpu: 1
 manual_seed: 42
 
 datasets:
   train:
-    name: deepskin_CA
+    name: deepskin_SA
     type: GeneralNRDataset
     dataroot_target: /root/autodl-tmp/rendered_2max
-    meta_info_file: /root/autodl-tmp/iqa_pytorch_train/datasets/deepskin/global/CA/meta_info.csv
+    meta_info_file: /root/autodl-tmp/iqa_pytorch_train/datasets/deepskin/global/SA/meta_info.csv
     split_index: split_name
     augment:
       resize: [256, 256]
@@ -18,16 +18,15 @@ datasets:
     batch_size_per_gpu: 8
     num_worker_per_gpu: 4
   val:
-    name: deepskin_CA
+    name: deepskin_SA
     type: GeneralNRDataset
     dataroot_target: /root/autodl-tmp/rendered_2max
-    meta_info_file: /root/autodl-tmp/iqa_pytorch_train/datasets/deepskin/global/CA/meta_info.csv
+    meta_info_file: /root/autodl-tmp/iqa_pytorch_train/datasets/deepskin/global/SA/meta_info.csv
     split_index: split_name
     phase: val
+
 network:
-  type: MANIQA
-  pretrained: true
-  pretrained_model_path: /root/.cache/torch/hub/pyiqa/ckpt_koniq10k.pt
+  type: CLIPIQA
 
 path:
   root: ./experiments
