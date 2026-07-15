@@ -9,6 +9,7 @@ Modified by: Chaofeng Chen (https://github.com/chaofengc)
 
 """
 
+import os
 import torch
 import torch.nn as nn
 import timm
@@ -57,8 +58,11 @@ class NIMA(nn.Module):
         pretrained_model_path=None,
     ):
         super(NIMA, self).__init__()
+        # Load from local HF cache to avoid download
+        local_ckpt = os.path.expanduser('~/.cache/huggingface/hub/models--timm--vgg16.tv_in1k/snapshots/main/pytorch_model.bin')
+        pretrained_cfg = {'file': local_ckpt} if os.path.exists(local_ckpt) else None
         self.base_model = timm.create_model(
-            base_model_name, pretrained=True, features_only=True
+            base_model_name, pretrained=True, pretrained_cfg=pretrained_cfg, features_only=True
         )
 
         self.global_pool = nn.AdaptiveAvgPool2d(1)

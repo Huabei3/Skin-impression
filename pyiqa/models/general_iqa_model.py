@@ -149,6 +149,11 @@ class GeneralIQAModel(BaseModel):
         self.optimizer.zero_grad()
         self.output_score = self.net_forward(self.net)
 
+        # Handle models that return (score, auxiliary_loss) tuple during training (e.g. TReS)
+        aux_loss = None
+        if isinstance(self.output_score, tuple):
+            self.output_score, aux_loss = self.output_score
+
         l_total = 0
         loss_dict = OrderedDict()
         # pixel loss
@@ -156,6 +161,11 @@ class GeneralIQAModel(BaseModel):
             l_mos = self.cri_mos(self.output_score, self.gt_mos)
             l_total += l_mos
             loss_dict['l_mos'] = l_mos
+
+        # auxiliary loss (e.g. TReS consistency loss)
+        if aux_loss is not None:
+            l_total += aux_loss
+            loss_dict['l_aux'] = aux_loss
 
         if self.cri_metric:
             l_metric = self.cri_metric(self.output_score, self.gt_mos)

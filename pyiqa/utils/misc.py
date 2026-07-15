@@ -30,11 +30,9 @@ def mkdir_and_rename(path):
     Args:
         path (str): Folder path.
     """
+    # Patched: don't archive existing experiments, just reuse
     if osp.exists(path):
-        new_name = path + '_archived_' + get_time_str()
-        new_name = new_name.replace('tb_logger', 'tb_logger_archived')
-        print(f'Path already exists. Rename it to {new_name}', flush=True)
-        os.rename(path, new_name)
+        print(f'Path already exists. Reusing (not archiving): {path}', flush=True)
     os.makedirs(path, exist_ok=True)
 
 
