@@ -141,18 +141,30 @@ class GeneralIQAModel(BaseModel):
 
     def net_forward(self, net):
         if self.use_ref:
-            return net(self.img_input, self.ref_input)
+            out = net(self.img_input, self.ref_input)
         else:
-            return net(self.img_input)
+            out = net(self.img_input)
+
+        # TReS returns (score, aux_loss) tuple during training; extract aux_loss
+        self._aux_loss = None
+        if isinstance(out, tuple):
+            out, self._aux_loss = out
+
+        # Rescale to [0,1] to match deepskin GT scale
+        net_type = type(net).__name__
+        if net_type == 'NIMA':
+            out = (out - 1.0) / 9.0
+        elif net_type == 'TReS':
+            out = out / 100.0
+        return out
 
     def optimize_parameters(self, current_iter):
         self.optimizer.zero_grad()
         self.output_score = self.net_forward(self.net)
 
         # Handle models that return (score, auxiliary_loss) tuple during training (e.g. TReS)
-        aux_loss = None
-        if isinstance(self.output_score, tuple):
-            self.output_score, aux_loss = self.output_score
+        # aux_loss is already extracted in net_forward
+        aux_loss = getattr(self, '_aux_loss', None)
 
         l_total = 0
         loss_dict = OrderedDict()
