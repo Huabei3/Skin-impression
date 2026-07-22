@@ -127,6 +127,25 @@ def _detect_ckpt_fusion_type(ckpt_path) -> Optional[str]:
         return None
 
 
+def _detect_ckpt_face_only(ckpt_path) -> bool:
+    """Peek at checkpoint keys to detect if it was trained as face_only (no global_stream / fusion weights).
+
+    Returns True if checkpoint contains face_stream keys but zero global_stream / fusion keys.
+    """
+    ckpt_path = Path(ckpt_path)
+    if not ckpt_path.exists():
+        return False
+    try:
+        ckpt = torch.load(ckpt_path, map_location="cpu")
+        msd = ckpt.get("model_state_dict", {})
+        has_face = any(k.startswith("face_stream.") for k in msd)
+        has_global = any(k.startswith("global_stream.") for k in msd)
+        has_fusion = any(k.startswith("fusion.") for k in msd)
+        return has_face and not has_global and not has_fusion
+    except Exception:
+        return False
+
+
 def run_test_with_metadata(trainer: Trainer, ckpt_path: str = None, split: str = "test") -> Dict:
     """
     跑推理。multi-head 时保留全部 10 列预测。
@@ -645,6 +664,15 @@ def main():
         if detected == "concat":
             config["ABLATION_FUSION_TYPE"] = "concat"
             logger.info(f"[auto-detect] Checkpoint used concat fusion → set ABLATION_FUSION_TYPE=concat")
+
+    # Auto-detect face_only checkpoint (missing global_stream / fusion keys)
+    if not config.get("ABLATION_FACE_ONLY", False) and args.resume:
+        resume_path = Path(args.resume)
+        if not resume_path.is_file():
+            resume_path = resume_path / "best_model.pth"
+        if _detect_ckpt_face_only(resume_path):
+            config["ABLATION_FACE_ONLY"] = True
+            logger.info(f"[auto-detect] Checkpoint is face_only (no global/fusion keys) → set ABLATION_FACE_ONLY=True")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s", force=True)
 

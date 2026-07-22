@@ -10,6 +10,7 @@ from .fusion import TwoStreamFusion, create_fusion
 from .global_stream import GlobalStream
 from .heads import ScoreHead
 from .stat_stream import StatisticalStream
+from .sit import SITPredictPNetwork
 
 
 class PredictPNetwork(nn.Module):
@@ -161,8 +162,15 @@ class PredictPNetwork(nn.Module):
             if face_uv is None:
                 raise ValueError(f"face_uv is required for model_variant={self.model_variant!r}")
             face_features = self.face_stream(face_rgb, face_uv)
-        global_features = self.global_stream(global_rgb if global_rgb is not None else face_rgb)
-        fused = self.fusion(face_features, global_features)
+
+        # ── Ablation: face-only ──
+        # face_only checkpoint 不含 global_stream / fusion 权重（strict=False 加载时随机初始化），
+        # 必须跳过 global+fuse，让 face_features 直连 score_head 才不破坏有效通道
+        if self.config.get("ABLATION_FACE_ONLY", False):
+            fused = face_features
+        else:
+            global_features = self.global_stream(global_rgb if global_rgb is not None else face_rgb)
+            fused = self.fusion(face_features, global_features)
 
         # ===== Statistical Stream: concat metadata after fusion =====
         if self._stat_enabled and stat_features is not None:
@@ -193,6 +201,11 @@ def create_model(
     use_attention: bool = True,
     model_variant: Optional[str] = None,
 ) -> nn.Module:
+    # Check if SIT backbone is requested
+    model_backbone = str(config.get("MODEL_BACKBONE", "")).lower().strip()
+    if model_backbone == "sit":
+        return SITPredictPNetwork(config)
+
     if model_variant is None:
         model_variant = str(config.get("MODEL_VARIANT", "v1"))
     model_variant = str(model_variant).lower().strip()
