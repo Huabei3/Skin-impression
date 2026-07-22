@@ -27,6 +27,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
 from torch.cuda.amp import autocast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -108,6 +109,24 @@ def load_per_attribute_gt(gt_dir: str) -> tuple:
     return name_to_scores, name_to_lab
 
 
+def _detect_ckpt_fusion_type(ckpt_path) -> Optional[str]:
+    """Peek at checkpoint keys to detect which ABLATION_FUSION_TYPE was used during training.
+
+    Returns 'concat' if concat_mlp keys present, None otherwise (gated / se_gated / cross_attn all use same face_proj+global_proj pattern).
+    """
+    ckpt_path = Path(ckpt_path)
+    if not ckpt_path.exists():
+        return None
+    try:
+        ckpt = torch.load(ckpt_path, map_location="cpu")
+        msd = ckpt.get("model_state_dict", {})
+        if any("concat_mlp" in k for k in msd):
+            return "concat"
+        return None
+    except Exception:
+        return None
+
+
 def run_test_with_metadata(trainer: Trainer, ckpt_path: str = None, split: str = "test") -> Dict:
     """
     跑推理。multi-head 时保留全部 10 列预测。
@@ -120,22 +139,74 @@ def run_test_with_metadata(trainer: Trainer, ckpt_path: str = None, split: str =
     if ckpt_path.exists():
         ckpt = torch.load(ckpt_path, map_location=trainer.device)
         old_sd = ckpt["model_state_dict"]
-        # Remap old checkpoint keys to current model naming:
-        #   backbone -> backbone_raw  (face_stream.rgb_branch)
-        #   score_head.heads -> score_heads
-        new_sd = {}
+
+        # ── 通用 key 重映射：向后兼容所有旧实验 checkpoint 格式 ──
+        # R1: face_stream.rgb_branch.backbone → backbone_raw
+        #     (FaceStreamV3 将 backbone 改名为 backbone_raw，但 global_stream 没改，所以不要碰 global)
+        # R2: score_head.heads.{attr} → score_heads.{attr}
+        # R3: fusion.concat_mlp → fusion.out (ablation_concat 系列)
+        new_sd: Dict[str, torch.Tensor] = {}
+        remap_log: List[str] = []
         for k, v in old_sd.items():
-            nk = k.replace("face_stream.rgb_branch.backbone.", "face_stream.rgb_branch.backbone_raw.")
-            nk = nk.replace("score_head.heads.", "score_heads.")
+            nk = k
+            nk = nk.replace("face_stream.rgb_branch.backbone.", "face_stream.rgb_branch.backbone_raw.")  # R1
+            nk = nk.replace("score_head.heads.", "score_heads.")  # R2
+            nk = nk.replace("fusion.concat_mlp.", "fusion.out.")   # R3
+            if nk != k:
+                remap_log.append(k)
             new_sd[nk] = v
-        # score_head is an alias for score_heads[first_attr] (network.py L102)
-        # → duplicate 01Preference weights under score_head.*
+
+        if remap_log:
+            logger.info(f"Key remapped ({len(remap_log)} keys): [{remap_log[0]} → ...]")
+
+        # 兼容旧 concat 架构：旧模型 face_stream.fusion 就是投影层，新模型多了
+        # fusion.face_proj / fusion.global_proj 额外投影层（无旧等价物）。
+        # 将它们初始化为恒等映射（eye + zero bias），使 fusion.out（来自 concat_mlp）能直接处理原特征。
+        model_state = trainer.model.state_dict()
+        model_keys = set(model_state.keys())
+        for proj_name in ["fusion.face_proj.weight", "fusion.face_proj.bias",
+                          "fusion.global_proj.weight", "fusion.global_proj.bias"]:
+            if proj_name in model_keys and proj_name not in new_sd:
+                with torch.no_grad():
+                    tensor = model_state[proj_name]
+                    if "weight" in proj_name and tensor.ndim == 2 and tensor.size(0) == tensor.size(1):
+                        nn.init.eye_(tensor)     # 方阵 → 恒等
+                    else:
+                        nn.init.zeros_(tensor)   # bias → 0
+                    new_sd[proj_name] = tensor
+                logger.info(f"[compat] Initialized {proj_name} as identity/zero (new layer, no old weights)")
         for k in list(new_sd.keys()):
-            if k.startswith("score_heads.01Preference."):
-                alias_k = k.replace("score_heads.01Preference.", "score_head.")
-                new_sd[alias_k] = new_sd[k]
-        trainer.model.load_state_dict(new_sd, strict=True)
-        logger.info(f"Loaded checkpoint from {ckpt_path}")
+            if k.startswith("score_heads."):
+                # 提取 attr_name 之后的部分: "score_heads.01Preference.net.0.weight" → "score_head.net.0.weight"
+                rest = k[len("score_heads."):]
+                dot_idx = rest.find(".")
+                if dot_idx > 0:
+                    alias_k = "score_head." + rest[dot_idx + 1:]
+                else:
+                    alias_k = "score_head." + rest
+                if alias_k in model_keys and alias_k not in new_sd:
+                    new_sd[alias_k] = new_sd[k]
+
+        # 尝试 strict=True 加载；失败则用 strict=False 并给出清晰诊断
+        try:
+            trainer.model.load_state_dict(new_sd, strict=True)
+            logger.info(f"Loaded checkpoint from {ckpt_path} (strict match)")
+        except RuntimeError as strict_err:
+            # 区分"安全缺失"（如 face_only 缺 global_stream）与"危险缺失"
+            missing, unexpected = trainer.model.load_state_dict(new_sd, strict=False)
+            major_missing = [k for k in missing if "num_batches_tracked" not in k]
+            if major_missing:
+                logger.warning(
+                    f"Checkpoint loaded with strict=False: "
+                    f"{len(major_missing)} untrained keys (random init), "
+                    f"{len(unexpected)} unused keys"
+                )
+                for mk in major_missing[:8]:
+                    logger.warning(f"  Missing (random init): {mk}")
+                if len(major_missing) > 8:
+                    logger.warning(f"  ... and {len(major_missing) - 8} more")
+            else:
+                logger.info(f"Loaded checkpoint from {ckpt_path} (strict=False, minor BN buffers only)")
     else:
         logger.warning(f"Checkpoint not found: {ckpt_path}")
 
@@ -564,6 +635,16 @@ def main():
     _apply_model_variant_overrides(config)
     if args.race:
         _apply_race_overrides(config, args.race)
+
+    # Auto-detect checkpoint fusion type (e.g. ablation_concat has concat_mlp keys → needs ABLATION_FUSION_TYPE=concat)
+    if args.ablation_fusion_type is None and args.resume:
+        resume_path = Path(args.resume)
+        if not resume_path.is_file():
+            resume_path = resume_path / "best_model.pth"
+        detected = _detect_ckpt_fusion_type(resume_path)
+        if detected == "concat":
+            config["ABLATION_FUSION_TYPE"] = "concat"
+            logger.info(f"[auto-detect] Checkpoint used concat fusion → set ABLATION_FUSION_TYPE=concat")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s", force=True)
 
