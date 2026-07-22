@@ -119,7 +119,16 @@ def run_test_with_metadata(trainer: Trainer, ckpt_path: str = None, split: str =
 
     if ckpt_path.exists():
         ckpt = torch.load(ckpt_path, map_location=trainer.device)
-        trainer.model.load_state_dict(ckpt["model_state_dict"], strict=True)
+        old_sd = ckpt["model_state_dict"]
+        # Remap old checkpoint keys to current model naming:
+        #   backbone -> backbone_raw  (face_stream.rgb_branch)
+        #   score_head.heads -> score_heads
+        new_sd = {}
+        for k, v in old_sd.items():
+            nk = k.replace("face_stream.rgb_branch.backbone.", "face_stream.rgb_branch.backbone_raw.")
+            nk = nk.replace("score_head.heads.", "score_heads.")
+            new_sd[nk] = v
+        trainer.model.load_state_dict(new_sd, strict=True)
         logger.info(f"Loaded checkpoint from {ckpt_path}")
     else:
         logger.warning(f"Checkpoint not found: {ckpt_path}")
