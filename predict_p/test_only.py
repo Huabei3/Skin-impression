@@ -128,6 +128,12 @@ def run_test_with_metadata(trainer: Trainer, ckpt_path: str = None, split: str =
             nk = k.replace("face_stream.rgb_branch.backbone.", "face_stream.rgb_branch.backbone_raw.")
             nk = nk.replace("score_head.heads.", "score_heads.")
             new_sd[nk] = v
+        # score_head is an alias for score_heads[first_attr] (network.py L102)
+        # → duplicate 01Preference weights under score_head.*
+        for k in list(new_sd.keys()):
+            if k.startswith("score_heads.01Preference."):
+                alias_k = k.replace("score_heads.01Preference.", "score_head.")
+                new_sd[alias_k] = new_sd[k]
         trainer.model.load_state_dict(new_sd, strict=True)
         logger.info(f"Loaded checkpoint from {ckpt_path}")
     else:
