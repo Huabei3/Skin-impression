@@ -2,13 +2,19 @@ clear all;
 % Load the XYZ data from csv
 
 
-n_phones=13;
+n_phones=18;
 %from mat
-for i_device=1:n_phones
+for i_device=14:18
+% for i_device=1:n_phones
     SPDname = 380:1:780;SPDname = SPDname';
+    if i_device<=13
     dir_729data=dir(fullfile("D:\work\VIVOskinExpe\renderCode\" + ...
         "calibResults\729",strcat("VIVO_CS2000_729_p3_", ...
         num2str(i_device),"*.mat")));
+    else
+        dir_729data=dir(fullfile("D:\work\VIVOskinExpe\renderCode\calibResults\x200", ...
+            strcat("VIVO_CS2000_729_x200_",num2str(i_device-13),"_1deg_P3*.mat")));
+    end
     load(fullfile(dir_729data(1).folder,dir_729data(1).name));
     
     DATAs(1,:) = [];

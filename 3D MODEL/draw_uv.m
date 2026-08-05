@@ -30,8 +30,11 @@ plot(srgb_xy(:, 1), srgb_xy(:, 2), 'k--', 'LineWidth', 2, 'DisplayName', 'sRGB')
 %%
 %from mat
 SPDname = 380:1:780;SPDname = SPDname';
+
+load("D:\work\VIVOskinExpe\renderCode\calibResults\pro\VIVO_CS2000_4_p3_x200_1_1deg_realP3_pro2026_07_29_22_21_16.mat");
+
 % load("Z:\homes\Peggy\VIVOskinExpe\calibResults\VIVO_CS2000_96_p3_4_1deg_realP32024_11_26_10_39_11.mat");
-load("Z:\homes\Peggy\VIVOskinExpe\calibResults\729_350_1deg_realP3\VIVO_CS2000_729_p3_1_1deg_realP3_2024_12_07_11_05_24.mat");
+% load("Z:\homes\Peggy\VIVOskinExpe\calibResults\729_350_1deg_realP3\VIVO_CS2000_729_p3_1_1deg_realP3_2024_12_07_11_05_24.mat");
 % load("Z:\homes\Peggy\VIVOskinExpe\calibResults\729_350_1deg_realP3\VIVO_CS2000_729_p3_5_1deg_2024_11_26_00_44_07.mat");
 % load("Z:\homes\Peggy\VIVOskinExpe\calibResults\96_350_1deg_realP3\VIVO_CS2000_96_p3_4_1deg_2024_11_25_20_27_44.mat");
 % load("D:\work\VIVOskinExpe\calibResults\729_350_1deg\VIVO_CS2000_729_p3_4_350_1deg_2024_11_08_18_53_34.mat");
@@ -41,15 +44,15 @@ load("Z:\homes\Peggy\VIVOskinExpe\calibResults\729_350_1deg_realP3\VIVO_CS2000_7
 % xyz=XYZ2./(XYZ2(:,1)+XYZ2(:,2)+XYZ2(:,3));
 % scatter(xyz(:,1),xyz(:,2));
 
-DATAs(1,:)=[];
-SPD = reshape(cell2mat(DATAs(:,4)),401,length(DATAs));
-XYZ10 = spd2xyz([SPDname SPD],10);
+% DATAs(1,:)=[];
+% SPD = reshape(cell2mat(DATAs(:,4)),401,length(DATAs));
+% XYZ10 = spd2xyz([SPDname SPD],10);
 
 
 % load("Z:\homes\Peggy\VIVOskinExpe\calibResults\96_350_1deg_realP3\VIVO_CS2000_96_p3_4_1deg_2024_11_25_17_26_26.mat");
-% % load("D:\work\VIVOskinExpe\calibResults\729_350_1deg\VIVO_CS2000_729_p3_4_350_1deg_2024_11_08_18_53_34.mat");
-% DATAs(1,:) = [];
-% SPD = reshape(cell2mat(DATAs(:,4)),401,length(DATAs));
-% XYZ2 = spd2xyz([SPDname SPD],2);
-% xyz=XYZ2./(XYZ2(:,1)+XYZ2(:,2)+XYZ2(:,3));
-% scatter(xyz(:,1),xyz(:,2),'red','+');
+% load("D:\work\VIVOskinExpe\calibResults\729_350_1deg\VIVO_CS2000_729_p3_4_350_1deg_2024_11_08_18_53_34.mat");
+DATAs(1,:) = [];
+SPD = reshape(cell2mat(DATAs(:,4)),401,length(DATAs));
+XYZ2 = spd2xyz([SPDname SPD],2);
+xyz=XYZ2./(XYZ2(:,1)+XYZ2(:,2)+XYZ2(:,3));
+scatter(xyz(:,1),xyz(:,2),'red','+');
