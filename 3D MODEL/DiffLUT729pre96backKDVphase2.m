@@ -29,10 +29,6 @@ XYZw=XYZ_mea{1}(ind(2),:);
 load("RGB.mat");
 RGB=RGB*255;
 
-% Load RGB_729 (729x3) from csv, same as in model_lut3dVIVO2.m
-RGB_729 = readtable("D:\work\VIVOskinExpe\3D MODEL\rgb_values1.csv");
-RGB_729 = table2array(RGB_729(:,2:4));
-
 for i_device=1:n_phones
     % 加载 phase2 逆向模型: data_ipv30_phase2_{}.mat
     dir_LUTback_file=dir(fullfile("D:\work\VIVOskinExpe\renderCode\calibResults\" + ...
@@ -50,8 +46,8 @@ for i_device=1:n_phones
     
     RGB_r{i_device}= lut3d_xyz2rgbNoParitp(XYZ_mea{i_device},LUTback_file); 
     
-    % Store horizontal concat: RGB_729 (729x3) + RGB_r{i_device} (96x3)
-    cat_cell{i_device,1} = [RGB_729, RGB_r{i_device}];
+    % Horizontal concat: RGB (96x3) + RGB_r{i_device} (96x3) -> 96x6
+    cat_cell{i_device,1} = [RGB, RGB_r{i_device}];
     
     XYZ_r{i_device}=lut3d_rgb2xyz1(RGB_r{i_device},LUTfore_file);
     XYZ_pre{i_device} = lut3d_rgb2xyz1(RGB,LUTfore_file);
