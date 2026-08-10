@@ -10,7 +10,7 @@ for i_device=1:n_phones
     
     % 96色数据 —— 仅 x200 路径
     dir_96data=dir(fullfile("D:\work\VIVOskinExpe\renderCode\calibResults\x200", ...
-        strcat("VIVO_CS2000_96_x200_",num2str(i_device),"_1deg_P3","*.mat")));
+        strcat("VIVO_CS2000_96_x200_",num2str(i_device),"_","*.mat")));
     file_96data=fullfile(dir_96data(1).folder,dir_96data(1).name);
     if ~exist(file_96data,"file")
         continue
@@ -28,6 +28,11 @@ XYZw=XYZ_mea{1}(ind(2),:);
 
 load("RGB.mat");
 RGB=RGB*255;
+
+% Load RGB_729 (729x3) from csv, same as in model_lut3dVIVO2.m
+RGB_729 = readtable("D:\work\VIVOskinExpe\3D MODEL\rgb_values1.csv");
+RGB_729 = table2array(RGB_729(:,2:4));
+
 for i_device=1:n_phones
     % 加载 phase2 逆向模型: data_ipv30_phase2_{}.mat
     dir_LUTback_file=dir(fullfile("D:\work\VIVOskinExpe\renderCode\calibResults\" + ...
@@ -44,19 +49,30 @@ for i_device=1:n_phones
     end
     
     RGB_r{i_device}= lut3d_xyz2rgbNoParitp(XYZ_mea{i_device},LUTback_file); 
+    
+    % Store horizontal concat: RGB_729 (729x3) + RGB_r{i_device} (96x3)
+    cat_cell{i_device,1} = [RGB_729, RGB_r{i_device}];
+    
     XYZ_r{i_device}=lut3d_rgb2xyz1(RGB_r{i_device},LUTfore_file);
     XYZ_pre{i_device} = lut3d_rgb2xyz1(RGB,LUTfore_file);
 
-    [val, ind]=max(XYZ_pre{i_device});
-    XYZw_pre=XYZ_pre{i_device}(ind(2),:);
+    % [val, ind]=max(XYZ_pre{i_device});
+    % XYZw_pre=XYZ_pre{i_device}(ind(2),:);
+    [val, ind]=max(XYZ_pre{1});
+    XYZw_pre=XYZ_pre{1}(ind(2),:);
 
     [lab_pre{i_device}] = xyz2lab(XYZ_pre{i_device},'user',XYZw_pre);
 
     [lab_r{i_device}] = xyz2lab(XYZ_r{i_device},'user',XYZw);
     [lab_mea{i_device}] = xyz2lab(XYZ_mea{i_device},'user',XYZw);
 
-    de_fore(i_device,:)=mean(deltaE2000(XYZ_pre{i_device},XYZ_r{i_device}));
-    de_fore_cell{i_device}=deltaE2000(XYZ_pre{i_device},XYZ_r{i_device});
+    de_fore(i_device,:)=mean(deltaE2000(lab_pre{i_device}(73:end,:), ...
+        lab_r{i_device}(73:end,:)));
+    de_fore1(i_device,:)=mean(deltaE2000(lab_pre{i_device}(73:end,:), ...
+        lab_mea{i_device}(73:end,:)));
+    de_fore_cell{i_device}=deltaE2000(lab_pre{i_device}(73:end,:), ...
+        lab_r{i_device}(73:end,:));
+
 end
 
 % 计算两两之间的平均色差值
