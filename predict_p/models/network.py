@@ -44,6 +44,7 @@ class PredictPNetwork(nn.Module):
 
         # ===== Phase 0: 通过 ABLATION_FUSION_TYPE 选择融合模块 =====
         fusion_type = str(config.get("ABLATION_FUSION_TYPE", "gated")).lower().strip()
+        self._fusion_type = fusion_type
         fusion_cfg = config["MODEL"]["fusion"]
         fusion_dim = int(fusion_cfg["fusion_dim"])
         dropout = float(fusion_cfg.get("dropout", 0.3))
@@ -156,21 +157,34 @@ class PredictPNetwork(nn.Module):
         global_rgb: Optional[torch.Tensor] = None,
         stat_features: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if self.model_variant == "v3":
-            face_features = self.face_stream(face_rgb)
+        # ── true_cross_attn: token 序列路径 ──
+        # 与向量路径完全独立，不影响 gated / cross_attn / face_only 等原有逻辑。
+        if self._fusion_type == "true_cross_attn":
+            if self.model_variant != "v3":
+                raise ValueError(
+                    "true_cross_attn 仅支持 model_variant=v3 (RGB-only face stream)"
+                )
+            face_tokens = self.face_stream.forward_tokens(face_rgb)
+            global_tokens = self.global_stream.forward_tokens(
+                global_rgb if global_rgb is not None else face_rgb
+            )
+            fused = self.fusion(face_tokens, global_tokens)
         else:
-            if face_uv is None:
-                raise ValueError(f"face_uv is required for model_variant={self.model_variant!r}")
-            face_features = self.face_stream(face_rgb, face_uv)
+            if self.model_variant == "v3":
+                face_features = self.face_stream(face_rgb)
+            else:
+                if face_uv is None:
+                    raise ValueError(f"face_uv is required for model_variant={self.model_variant!r}")
+                face_features = self.face_stream(face_rgb, face_uv)
 
-        # ── Ablation: face-only ──
-        # face_only checkpoint 不含 global_stream / fusion 权重（strict=False 加载时随机初始化），
-        # 必须跳过 global+fuse，让 face_features 直连 score_head 才不破坏有效通道
-        if self.config.get("ABLATION_FACE_ONLY", False):
-            fused = face_features
-        else:
-            global_features = self.global_stream(global_rgb if global_rgb is not None else face_rgb)
-            fused = self.fusion(face_features, global_features)
+            # ── Ablation: face-only ──
+            # face_only checkpoint 不含 global_stream / fusion 权重（strict=False 加载时随机初始化），
+            # 必须跳过 global+fuse，让 face_features 直连 score_head 才不破坏有效通道
+            if self.config.get("ABLATION_FACE_ONLY", False):
+                fused = face_features
+            else:
+                global_features = self.global_stream(global_rgb if global_rgb is not None else face_rgb)
+                fused = self.fusion(face_features, global_features)
 
         # ===== Statistical Stream: concat metadata after fusion =====
         if self._stat_enabled and stat_features is not None:

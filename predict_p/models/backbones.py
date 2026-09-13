@@ -66,6 +66,12 @@ class SimpleCNNBackbone(nn.Module):
         x = self.pool(x)
         return self.proj(x)
 
+    def forward_tokens(self, x: torch.Tensor) -> torch.Tensor:
+        """返回 token 序列 (B, N, C)，不经过 pool/proj。用于 true_cross_attn 融合。"""
+        feats = self.features(x)  # (B, C, H, W)
+        B, C, H, W = feats.shape
+        return feats.view(B, C, H * W).transpose(1, 2)  # (B, N, C)
+
 
 # ============================================================
 # Phase 0 新增: MobileNetV3 / ViT / Swin / CLIP backbones

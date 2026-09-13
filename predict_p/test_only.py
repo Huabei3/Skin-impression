@@ -586,7 +586,7 @@ def main():
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--ablation-face-only", action="store_true", default=False)
     parser.add_argument("--ablation-fusion-type", type=str,
-                        choices=["gated", "concat", "se_gated", "cross_attn"], default=None)
+                        choices=["gated", "concat", "se_gated", "cross_attn", "true_cross_attn"], default=None)
     parser.add_argument("--ablation-stat-stream", action="store_true", default=False)
     parser.add_argument("--ablation-lab-center", action="store_true", default=False)
     parser.add_argument("--ablation-loss-type", type=str, choices=["mse", "bce_smooth_l1"], default=None)

@@ -238,10 +238,11 @@ def main() -> None:
     parser.add_argument(
         "--ablation-fusion-type",
         type=str,
-        choices=["gated", "concat", "se_gated", "cross_attn"],
+        choices=["gated", "concat", "se_gated", "cross_attn", "true_cross_attn"],
         default=None,
         help="Ablation-2: Fusion type. 'gated' (default), 'concat' (simple concat+MLP), "
-             "'se_gated' (SE recalibration + gated), 'cross_attn' (bidirectional cross-attention).",
+             "'se_gated' (SE recalibration + gated), 'cross_attn' (bidirectional cross-attention), "
+             "'true_cross_attn' (token-level bidirectional cross-attention).",
     )
     parser.add_argument(
         "--ablation-stat-stream",

@@ -59,3 +59,10 @@ class GlobalStream(nn.Module):
         if features.ndim > 2:
             features = features.view(features.size(0), -1)
         return self.feature_projector(features)
+
+    def forward_tokens(self, x: torch.Tensor) -> torch.Tensor:
+        """返回 token 序列 (B, N, C)，用于 true_cross_attn。仅 simple_cnn backbone 支持。"""
+        fn = getattr(self.backbone, "forward_tokens", None)
+        if fn is None:
+            raise ValueError("GlobalStream.forward_tokens requires simple_cnn backbone")
+        return fn(x)

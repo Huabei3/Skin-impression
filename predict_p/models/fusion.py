@@ -164,6 +164,90 @@ class CrossAttentionFusion(nn.Module):
         return self.out(fused)
 
 
+class TrueCrossAttentionFusion(nn.Module):
+    """
+    真正的 token-level Cross-Attention Fusion。
+
+    与 CrossAttentionFusion 的本质区别：
+    - CrossAttentionFusion 输入的是池化后的向量 (B, D)，每个流只有 1 个 token，
+      softmax 单元素恒为 1，attention 权重退化失效。
+    - TrueCrossAttentionFusion 输入的是 token 序列 (B, N, D)，face 的每个 token
+      去 attend global 的所有 token（反之亦然），softmax 在真实序列上归一化，
+      是真正有意义的交叉注意力。
+
+    输入:
+      face_tokens:   (B, Nf, Df)  -- face 流 backbone 的空间 token 序列
+      global_tokens: (B, Ng, Dg)  -- global 流 backbone 的空间 token 序列
+    输出:
+      (B, fusion_dim) 向量，与其它 fusion 输出对齐，可直接接 score_head。
+    """
+    def __init__(
+        self, face_dim: int, global_dim: int, fusion_dim: int = 256,
+        dropout: float = 0.3, num_heads: int = 4,
+    ) -> None:
+        super().__init__()
+        self.face_proj = nn.Linear(face_dim, fusion_dim)
+        self.global_proj = nn.Linear(global_dim, fusion_dim)
+        self.num_heads = int(num_heads)
+        self.head_dim = fusion_dim // self.num_heads
+        assert fusion_dim % self.num_heads == 0, (
+            f"fusion_dim {fusion_dim} must be divisible by num_heads {num_heads}"
+        )
+
+        # face -> global 交叉注意力
+        self.q_f = nn.Linear(fusion_dim, fusion_dim)
+        self.k_g = nn.Linear(fusion_dim, fusion_dim)
+        self.v_g = nn.Linear(fusion_dim, fusion_dim)
+
+        # global -> face 交叉注意力
+        self.q_g = nn.Linear(fusion_dim, fusion_dim)
+        self.k_f = nn.Linear(fusion_dim, fusion_dim)
+        self.v_f = nn.Linear(fusion_dim, fusion_dim)
+
+        self.out = nn.Sequential(
+            nn.Linear(fusion_dim * 2, fusion_dim),
+            nn.BatchNorm1d(fusion_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+        )
+
+    def _cross_attn(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        """
+        Multi-head cross-attention on token sequences.
+
+        q: (B, Nq, D), k: (B, Nk, D), v: (B, Nk, D)  ->  (B, Nq, D)
+        """
+        B, Nq, D = q.shape
+        Nk = k.shape[1]
+        H, d = self.num_heads, self.head_dim
+
+        q = q.view(B, Nq, H, d).transpose(1, 2)   # (B, H, Nq, d)
+        k = k.view(B, Nk, H, d).transpose(1, 2)   # (B, H, Nk, d)
+        v = v.view(B, Nk, H, d).transpose(1, 2)   # (B, H, Nk, d)
+
+        attn = torch.matmul(q, k.transpose(-2, -1)) / (d ** 0.5)  # (B, H, Nq, Nk)
+        attn = torch.softmax(attn, dim=-1)
+        out = torch.matmul(attn, v)                              # (B, H, Nq, d)
+        out = out.transpose(1, 2).contiguous().view(B, Nq, D)    # (B, Nq, D)
+        return out
+
+    def forward(self, face_tokens: torch.Tensor, global_tokens: torch.Tensor) -> torch.Tensor:
+        f = self.face_proj(face_tokens)      # (B, Nf, D)
+        g = self.global_proj(global_tokens)  # (B, Ng, D)
+
+        # face 查询 global 中的相关信息
+        f2g = self._cross_attn(self.q_f(f), self.k_g(g), self.v_g(g))  # (B, Nf, D)
+        # global 查询 face 中的相关信息
+        g2f = self._cross_attn(self.q_g(g), self.k_f(f), self.v_f(f))  # (B, Ng, D)
+
+        # token 序列聚合回向量（全局平均池化）
+        f2g = f2g.mean(dim=1)  # (B, D)
+        g2f = g2f.mean(dim=1)  # (B, D)
+
+        fused = torch.cat([f2g, g2f], dim=1)  # (B, 2D)
+        return self.out(fused)
+
+
 # ============================================================
 # Fusion 工厂函数
 # ============================================================
@@ -193,8 +277,13 @@ def create_fusion(
         return SEGatedFusion(face_dim, global_dim, fusion_dim, dropout)
     elif ft in ("cross_attn", "cross_attention", "crossattn"):
         return CrossAttentionFusion(face_dim, global_dim, fusion_dim, dropout)
+    elif ft in ("true_cross_attn", "true_cross_attention", "true_crossattn"):
+        return TrueCrossAttentionFusion(face_dim, global_dim, fusion_dim, dropout)
     else:
-        raise ValueError(f"Unknown fusion type: {fusion_type!r}. Supported: gated, concat, se_gated, cross_attn")
+        raise ValueError(
+            f"Unknown fusion type: {fusion_type!r}. "
+            f"Supported: gated, concat, se_gated, cross_attn, true_cross_attn"
+        )
 
 
 class _ConcatFusionWrapper(nn.Module):

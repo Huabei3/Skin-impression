@@ -158,6 +158,13 @@ class RGBBranch(nn.Module):
             feats = feats.view(feats.size(0), -1)
         return self.feature_projector(feats)
 
+    def forward_tokens(self, x: torch.Tensor) -> torch.Tensor:
+        """返回 token 序列 (B, N, C)，用于 true_cross_attn。仅 simple_cnn backbone 支持。"""
+        fn = getattr(self.backbone_raw, "forward_tokens", None)
+        if fn is None:
+            raise ValueError("RGBBranch.forward_tokens requires simple_cnn backbone")
+        return fn(x)
+
     def freeze_backbone(self) -> None:
         """冻结 backbone 参数，仅训练 projection head。"""
         for p in self.backbone_raw.parameters():
@@ -526,3 +533,7 @@ class FaceStreamV3(nn.Module):
     def forward(self, face_rgb: torch.Tensor) -> torch.Tensor:
         rgb_feats = self.rgb_branch(face_rgb)
         return self.fusion(rgb_feats)
+
+    def forward_tokens(self, face_rgb: torch.Tensor) -> torch.Tensor:
+        """返回 RGB 分支的 token 序列 (B, N, C)，用于 true_cross_attn。"""
+        return self.rgb_branch.forward_tokens(face_rgb)
