@@ -222,19 +222,16 @@ resume_train "full_v1_loss_mask" "v1" "--rgb-backbone simple_cnn --global-backbo
 # 不加任何新参数 = 回退到原始 STIM-CNN V3 逻辑
 # ============================================================
 在A1-A8当中 我打算优先跑 A1、A7、A8 因为这是STIM-CNN与MS-CAN的差别所在。用来跑它们几个的实例分别是：
-inst2：指令：ssh -p 49348 root@connect.westd.seetacloud.com密码0/SjlnZGb4e4；
-inst3：指令ssh -p 46743 root@connect.weste.seetacloud.com密码tXxunCee0REF；
-inst4：指令ssh -p 50018 root@connect.westd.seetacloud.com密码NgybMayVzjPg；
-inst5：指令ssh -p 47163 root@connect.westd.seetacloud.com密码NitFu0JHRtAK。
+
 
 
 
 新的：
-inst2：指令ssh -p 30844 root@connect.westc.seetacloud.com密码9uJXpNG3JN04；
-inst3：指令ssh -p 22898 root@connect.westc.seetacloud.com密码AjKcJqDHzD6d
-inst4：指令ssh -p 16056 root@connect.westb.seetacloud.com密码+WHd7g07Kp8X
-inst5：指令ssh -p 25650 root@connect.westc.seetacloud.com密码S8s776/Z5JW3
-inst6：指令ssh -p 30374 root@connect.westc.seetacloud.com密码cEjcRD5NJw0L
+inst2：
+inst3：指令ssh -p 25543 root@connect.westc.seetacloud.com密码aVNDqobDUhCx
+inst4：指令ssh -p 43098 root@connect.weste.seetacloud.com密码C4lhu1bF80MH
+inst5：指令ssh -p 32567 root@connect.westc.seetacloud.com密码cIVCU3dIzcLt
+
 
 
 inst2 mobilenetv3s  
@@ -408,6 +405,18 @@ for RACE in SA CA AS AF; do
     --exp-name ablation_mscman_backbone_v3 --num-workers 4 --batch-size 16
 done
 
+# --- A12: true-cross-atten (token-level cross-attention fusion) ---
+for RACE in SA CA AS AF; do
+  CKPT="$OUT/ablation_true_cross_attn_v3/predict_p_$RACE/checkpoints/best_model.pth"
+  [ -f "$CKPT" ] && echo "SKIP $RACE: exists" && continue
+  python predict_p/train.py --model-variant v3 \
+    --race $RACE --multi-head --attributes all --nan-handling loss_mask \
+    --ablation-fusion-type true_cross_attn \
+    --rgb-backbone simple_cnn --global-backbone simple_cnn \
+    --data-root $DATA --gt-excel $GT --output-root $OUT \
+    --exp-name ablation_true_cross_attn_v3 --num-workers 4 --batch-size 16
+done
+
 
 
 
@@ -450,6 +459,15 @@ resume_train "ablation_clip_v3" "v3" "--rgb-backbone clip_vit_b32 --global-backb
 
 # --- inst6 (30374): A6 SE-Gated fusion (补AF) ---
 resume_train "ablation_se_fusion_v3" "v3" "--ablation-fusion-type se_gated --rgb-backbone simple_cnn --global-backbone simple_cnn"
+
+# --- A9: Lab色度中心回归 ---
+resume_train "ablation_lab_center_v3" "v3" "--ablation-lab-center --rgb-backbone simple_cnn --global-backbone simple_cnn"
+
+# --- A10: BCE+SmoothL1+L1(center)+Pearson ---
+resume_train "ablation_bce_loss_v3" "v3" "--ablation-lab-center --ablation-loss-type bce_smooth_l1 --rgb-backbone simple_cnn --global-backbone simple_cnn"
+
+# --- A11: MS-CMAN backbone (ResNet50 face + MobileNetV3-S global) ---
+resume_train "ablation_mscman_backbone_v3" "v3" "--rgb-backbone resnet50 --global-backbone mobilenet_v3_small"
 
 
 # ===== 任务分配 =====
@@ -557,6 +575,38 @@ for RACE in SA CA AS AF; do
     --resume $OUT/ablation_stat_stream_v3/predict_p_$RACE/checkpoints/best_model.pth
 done
 
+# A9 — Lab色度中心回归
+for RACE in SA CA AS AF; do
+  python predict_p/test_only.py --model-variant v3 \
+    --ablation-lab-center \
+    --rgb-backbone simple_cnn --global-backbone simple_cnn \
+    --multi-head --attributes all \
+    --data-root $DATA --gt-excel $GT --output-root $OUT --num-workers 4 \
+    --exp-name ablation_lab_center_v3 --race $RACE \
+    --resume $OUT/ablation_lab_center_v3/predict_p_$RACE/checkpoints/best_model.pth
+done
+
+# A10 — BCE+SmoothL1+L1(center)+Pearson
+for RACE in SA CA AS AF; do
+  python predict_p/test_only.py --model-variant v3 \
+    --ablation-lab-center --ablation-loss-type bce_smooth_l1 \
+    --rgb-backbone simple_cnn --global-backbone simple_cnn \
+    --multi-head --attributes all \
+    --data-root $DATA --gt-excel $GT --output-root $OUT --num-workers 4 \
+    --exp-name ablation_bce_loss_v3 --race $RACE \
+    --resume $OUT/ablation_bce_loss_v3/predict_p_$RACE/checkpoints/best_model.pth
+done
+
+# A11 — MS-CMAN backbone (ResNet50 face + MobileNetV3-S global)
+for RACE in SA CA AS AF; do
+  python predict_p/test_only.py --model-variant v3 \
+    --rgb-backbone resnet50 --global-backbone mobilenet_v3_small \
+    --multi-head --attributes all \
+    --data-root $DATA --gt-excel $GT --output-root $OUT --num-workers 4 \
+    --exp-name ablation_mscman_backbone_v3 --race $RACE \
+    --resume $OUT/ablation_mscman_backbone_v3/predict_p_$RACE/checkpoints/best_model.pth
+done
+
 
 
 # 
@@ -587,3 +637,90 @@ resume_ablation "ablation_clip_v3" "--rgb-backbone clip_vit_b32 --global-backbon
 # 3. 回车执行，脚本会自动检测断点并续训
 # 4. 想后台跑：nohup bash -c '...函数定义... resume_ablation ...' > train.log 2>&1 &
 # ============================================================
+
+
+# ============================================================
+# 消融实验逻辑说明
+# ============================================================
+# 所有实验共用：
+#   --model-variant v3  --multi-head --attributes all --nan-handling loss_mask
+#   --data-root $DATA --gt-excel $GT --output-root $OUT --num-workers 4
+#   训练 seed=666, AdamW lr=7e-4, CosineAnnealingWarmRestarts, early stop patience=100
+#   subject-level split (test=male全场景, val=female固定2场景)
+# ============================================================
+
+# full_v3_loss_mask（主模型 baseline）
+#   STIM-CNN 完整版：face 和 global 均使用 simple_cnn（4 层卷积，从头训练，约 30 万参数），
+#   门控加权融合，10 个独立 MLP 输出头输出 10 维印象指数。
+#   loss = BCE + SmoothL1 + 3.0×Pearson，带 extreme weighting 和 label smoothing。
+#   所有消融实验均以此为基础，只改动单一组件。
+
+# full_v1_loss_mask（UV 色度分支消融）
+#   在 V3 纯 RGB 的基础上恢复 UV 色度直方图分支（face_uv 输入）。
+#   V1 架构：face_rgb + face_uv（CIELUV 2D 直方图 → 小型 CNN 编码）+ global_rgb。
+#   验证 UV 分支是否提供额外的色度分布信息。论文消融组 2。
+
+# sing_model（单头消融）
+#   10 个独立 MLP 输出头 → 1 个共享 MLP 输出头。
+#   训练时只使用 01Preference 属性，验证多任务学习（10 属性联合优化）
+#   是否为共享特征提取器注入了额外的监督信号。论文消融组 1。
+
+# ablation_face_only_loss_mask_v3（移除全局分支消融）
+#   --ablation-face-only：global stream 的输出被置零，不参与融合。
+#   只使用 face_rgb 输入做预测。验证全局场景上下文（照明、背景等）
+#   对肤色印象判断是否必要。论文消融组 3。
+
+# ablation_concat_loss_mask_v3（简单融合消融）
+#   --ablation-fusion-type concat：门控加权融合 → 直接 concat + MLP 投影。
+#   验证门控机制（自适应学习 face/global 融合比例）是否优于固定拼接。
+#   论文消融组 4（对应原版 concat 融合基线）。
+
+# ablation_resnet50_loss_mask_v3（大 backbone 消融）
+#   --rgb-backbone resnet50：face backbone 从 simple_cnn → ResNet50（ImageNet 预训练）。
+#   参数量从 30 万增至约 2500 万。验证在当前数据规模下增大模型容量
+#   是否带来表征能力的提升，还是反而过拟合。论文消融组 4（对应 ResNet50 变体）。
+
+# ablation_mobilenetv3s_v3（现代轻量 CNN 消融）
+#   --rgb-backbone mobilenet_v3_small：face backbone 从 simple_cnn → MobileNetV3-Small（预训练）。
+#   验证工业级轻量 CNN（含 SE 模块、hard-swish 等现代设计）是否优于
+#   手写的 4 层简单 CNN。
+
+# ablation_se_fusion_v3（SE-Gated 融合消融）
+#   --ablation-fusion-type se_gated：在门控融合之前对两分支特征做 SE channel recalibration。
+#   验证通道注意力加权是否能进一步优化门控融合的特征质量。
+
+# ablation_cross_attn_v3（Cross-Attention 融合消融）
+#   --ablation-fusion-type cross_attn：门控加权融合 → 双向 Cross-Attention。
+#   face features 和 global features 互相作为 query/key/value 做信息交换。
+#   验证注意力机制是否优于显式的门控竞争策略。
+
+# ablation_stat_stream_v3（统计特征流消融）
+#   --ablation-stat-stream：在融合后的 256-D 特征基础上拼接 11-D 统计特征
+#   （scene_type(4) + CCT + illuminance + ethnicity(4) + gender，从 original_name 解析），
+#   再经 MLP 投影回 256-D。验证显式注入场景/人种/性别先验是否有补充作用。
+
+# ablation_vitb16_v3（Transformer backbone 消融）
+#   --rgb-backbone vit_b_16 --freeze-backbone --batch-size 8：
+#   face backbone 从 simple_cnn → 冻结的 ViT-B/16（ImageNet-21k 预训练，86M 参数）。
+#   仅训练 fusion + head 层。验证 Transformer 架构的全局自注意力机制
+#   是否适配以局部纹理为核心的肤色评估任务。
+
+# ablation_lab_center_v3（A9: Lab 色度中心回归）
+#   --ablation-lab-center：在 10 个 score head 之外新增 10 个 center head，
+#   每个输出 3 维 L*a*b* 色度中心。center loss = L1 loss，λ=1.5，
+#   预测值和 GT 均除以 K=128 做归一化。(50,0,0) 的 GT 占位符视为 NaN，
+#   通过 center_mask 排除出 loss 计算。验证双任务（评分 + 色度回归）联合训练
+#   是否提升偏好预测精度。
+
+# ablation_bce_loss_v3（A10: MS-CMAN 风格 Loss）
+#   与 A9 架构完全相同（--ablation-lab-center），区别仅在于 Pearson λ 从 3.0 → 0.7，
+#   对齐 MS-CMAN 论文的 λ₃=0.7。其余 loss 组件（BCE+SmoothL1+extreme weighting
+#   +label smoothing+center L1 λ=1.5）与 A9 一致。验证 Pearson 权重
+#   对多任务训练平衡性的影响。
+
+# ablation_mscman_backbone_v3（A11: MS-CMAN Backbone）
+#   --rgb-backbone resnet50 --global-backbone mobilenet_v3_small：
+#   使用 MS-CMAN 论文的异构 backbone 配置（face=ResNet50 预训练 + global=MobileNetV3-Small 预训练）。
+#   保持 STIM-CNN 的门控融合和 10 head 输出不变。验证异构 backbone
+#   设计是否优于 STIM-CNN 的同构简单 CNN。注：不含 MS-CMAN 的统计流和 Cross-Attention 融合，
+#   非完整复现。
