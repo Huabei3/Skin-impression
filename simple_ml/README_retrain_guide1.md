@@ -607,6 +607,17 @@ for RACE in SA CA AS AF; do
     --resume $OUT/ablation_mscman_backbone_v3/predict_p_$RACE/checkpoints/best_model.pth
 done
 
+# A12 — true-cross-atten (token-level cross-attention fusion)
+for RACE in SA CA AS AF; do
+  python predict_p/test_only.py --model-variant v3 \
+    --ablation-fusion-type true_cross_attn \
+    --rgb-backbone simple_cnn --global-backbone simple_cnn \
+    --multi-head --attributes all \
+    --data-root $DATA --gt-excel $GT --output-root $OUT --num-workers 4 \
+    --exp-name ablation_true_cross_attn_v3 --race $RACE \
+    --resume $OUT/ablation_true_cross_attn_v3/predict_p_$RACE/checkpoints/best_model.pth
+done
+
 
 
 # 
