@@ -42,7 +42,8 @@ class FacialPreferenceDataset(Dataset):
                  allowed_scenes: Optional[List] = None,
                  valid_prefixes: Optional[List[str]] = None,
                  test_prefixes: Optional[List[str]] = None,
-                 split_export_path: Optional[str] = None):
+                 split_export_path: Optional[str] = None,
+                 lab_point_csv: Optional[str] = None):
         """
         初始化数据集
         
@@ -73,6 +74,21 @@ class FacialPreferenceDataset(Dataset):
         self.valid_prefixes = self._normalize_prefixes(valid_prefixes)
         self.test_prefixes = self._normalize_prefixes(test_prefixes)
         self.split_export_path = split_export_path
+
+        # ===== A13/A14/A15: fit_table.lab_values(i_point,:) 查表 =====
+        self._lab_point = {}
+        if lab_point_csv:
+            import csv
+            with open(lab_point_csv, newline="") as fh:
+                for r in csv.DictReader(fh):
+                    try:
+                        self._lab_point[r["original_name"].strip()] = (
+                            float(r["lab_L"]), float(r["lab_a"]), float(r["lab_b"]))
+                    except (TypeError, ValueError):
+                        self._lab_point[r["original_name"].strip()] = (np.nan,) * 3
+            logger.info(f"Loaded lab_values(i_point,:) for {len(self._lab_point)} samples")
+        # ==========================================
+
         # 全局图根目录：默认回退到 face_rgb_root，便于兼容旧配置
         self.global_rgb_root = Path(global_rgb_root) if global_rgb_root is not None else self.face_rgb_root
         # 允许使用的编号（两位字符串，如 "01"），None 表示全部
@@ -189,6 +205,8 @@ class FacialPreferenceDataset(Dataset):
                     'preference_score': preference_score,
                     'preference_L': float(l_star),
                     'preference_center': (a_star, b_star),
+                    'lab_point': self._lab_point.get(str(original_name).strip(),
+                                 (np.nan, np.nan, np.nan)),   # A13/A14/A15
                     'scene_person': scene_person,
                     'original_name': original_name
                 }
@@ -949,7 +967,9 @@ class FacialPreferenceDataset(Dataset):
             'global_rgb': global_rgb,
             'preference_score': preference_score,
             'preference_L': preference_L,
-            'preference_center': preference_center
+            'preference_center': preference_center,
+            'lab_point': torch.tensor(data_item.get('lab_point', (np.nan,) * 3),
+                          dtype=torch.float32),                     # A13/A14/A15
         }
         # Phase 0: Statistical Stream — 预计算的统计特征 (11-D tensor, no string)
         if 'stat_features' in data_item:
@@ -1083,6 +1103,7 @@ def create_data_loaders(config: Dict) -> Tuple[DataLoader, DataLoader, DataLoade
         valid_prefixes=valid_prefixes,
         test_prefixes=test_prefixes,
         split_export_path=split_export_path,  # 只在 train 时导出
+        lab_point_csv=config.get("LAB_POINT_CSV"),     # A13/A14/A15
     )
     
     val_dataset = FacialPreferenceDataset(
@@ -1105,6 +1126,7 @@ def create_data_loaders(config: Dict) -> Tuple[DataLoader, DataLoader, DataLoade
         valid_prefixes=valid_prefixes,
         test_prefixes=test_prefixes,
         split_export_path=None,  # 不重复导出
+        lab_point_csv=config.get("LAB_POINT_CSV"),     # A13/A14/A15
     )
     
     test_dataset = FacialPreferenceDataset(
@@ -1127,6 +1149,7 @@ def create_data_loaders(config: Dict) -> Tuple[DataLoader, DataLoader, DataLoade
         valid_prefixes=valid_prefixes,
         test_prefixes=test_prefixes,
         split_export_path=None,  # 不重复导出
+        lab_point_csv=config.get("LAB_POINT_CSV"),     # A13/A14/A15
     )
     
     # 创建数据加载器
