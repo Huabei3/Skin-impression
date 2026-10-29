@@ -84,6 +84,22 @@ class PredictPNetwork(nn.Module):
             head_input_dim = fusion_dim
         # ===============================
 
+        # ===== A13/A14/A15: lab_values(i_point,:) 作为额外输入 =====
+        self._lab_vec_enabled = bool(config.get("ABLATION_LAB_VEC", False))
+        if self._lab_vec_enabled:
+            self.lab_vec_stream = nn.Sequential(
+                nn.Linear(3, 32),
+                nn.ReLU(inplace=True),
+                nn.Dropout(dropout),
+            )
+            self.lab_vec_merge = nn.Sequential(
+                nn.Linear(head_input_dim + 32, head_input_dim),
+                nn.BatchNorm1d(head_input_dim),
+                nn.ReLU(inplace=True),
+                nn.Dropout(dropout),
+            )
+        # =========================================================
+
         # ===== Multi-head / Single-head =====
         self._multi_head_enabled = bool(config.get("MULTI_HEAD", False))
         if self._multi_head_enabled:
@@ -156,6 +172,7 @@ class PredictPNetwork(nn.Module):
         face_uv: Optional[torch.Tensor],
         global_rgb: Optional[torch.Tensor] = None,
         stat_features: Optional[torch.Tensor] = None,
+        lab_point: Optional[torch.Tensor] = None,          # A13/A14/A15
     ) -> torch.Tensor:
         # ── true_cross_attn: token 序列路径 ──
         # 与向量路径完全独立，不影响 gated / cross_attn / face_only 等原有逻辑。
@@ -192,6 +209,14 @@ class PredictPNetwork(nn.Module):
             fused = torch.cat([fused, stat], dim=1)      # (B, 256+128)
             fused = self.stat_merge(fused)               # (B, 256)
         # ==============================================================
+
+        # ===== A13/A14/A15: 融合 lab_values(i_point,:) =====
+        if self._lab_vec_enabled:
+            if lab_point is None:
+                raise ValueError("ABLATION_LAB_VEC=True 但 forward 未传入 lab_point")
+            lab_feat = self.lab_vec_stream(lab_point)                 # (B, 32)
+            fused = self.lab_vec_merge(torch.cat([fused, lab_feat], dim=1))
+        # ==================================================
 
         if self._multi_head_enabled:
             outputs = []

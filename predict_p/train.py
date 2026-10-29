@@ -262,6 +262,37 @@ def main() -> None:
              "Values (50,0,0) treated as NaN via loss_mask.",
     )
     parser.add_argument(
+        "--ablation-lab-vec",
+        action="store_true",
+        default=False,
+        help="A13/A14/A15: 额外输入 fit_table.lab_values(i_point,:)（3 维，按 original_name 查表）。",
+    )
+    parser.add_argument(
+        "--lab-point-csv",
+        type=str,
+        default=None,
+        help="gen_lab_point_csv.py 生成的 lab_point_by_name.csv 路径。",
+    )
+    parser.add_argument(
+        "--ablation-delta-lab",
+        action="store_true",
+        default=False,
+        help="A13/A14: center 头回归 delta = lab_center - lab_values(i_point,:)。",
+    )
+    parser.add_argument(
+        "--lab-delta-channels",
+        type=str,
+        choices=["none", "L", "ab", "Lab"],
+        default=None,
+        help="L=A14(仅 L* delta) / Lab=A13(全通道 delta) / none=A15(直接回归 lab_center)。",
+    )
+    parser.add_argument(
+        "--lab-delta-scale",
+        type=str,
+        default=None,
+        help="delta 通道的归一化尺度，逗号分隔三通道，默认 '2,8,10'；raw 通道仍用 128。",
+    )
+    parser.add_argument(
         "--ablation-loss-type",
         type=str,
         choices=["mse", "bce_smooth_l1"],
@@ -360,6 +391,17 @@ def main() -> None:
         config["ABLATION_STAT_STREAM"] = True
     if bool(args.ablation_lab_center):
         config["ABLATION_LAB_CENTER"] = True
+    if bool(args.ablation_lab_vec):
+        config["ABLATION_LAB_VEC"] = True
+    if args.lab_point_csv:
+        config["LAB_POINT_CSV"] = str(Path(args.lab_point_csv))
+    if bool(args.ablation_delta_lab):
+        config["ABLATION_DELTA_LAB"] = True
+        config["ABLATION_LAB_CENTER"] = True        # delta 头依赖 A9 的 center head
+    if args.lab_delta_channels:
+        config["LAB_DELTA_CHANNELS"] = args.lab_delta_channels
+    if args.lab_delta_scale:
+        config["LAB_DELTA_SCALE"] = str(args.lab_delta_scale)
     if args.ablation_loss_type is not None:
         config["ABLATION_LOSS_TYPE"] = str(args.ablation_loss_type)
     # A10: bce_smooth_l1 mode → Pearson λ=0.7 (MS-CMAN alignment)

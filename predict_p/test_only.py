@@ -256,9 +256,14 @@ def run_test_with_metadata(trainer: Trainer, ckpt_path: str = None, split: str =
             face_uv = None
             if str(trainer.config.get("MODEL_VARIANT", "v1")).lower().strip() != "v3":
                 face_uv = batch["face_uv"].to(trainer.device, non_blocking=True)
+            # A13/A14/A15: lab_values(i_point,:)
+            lab_point = batch.get("lab_point", None)
+            if lab_point is not None:
+                lab_point = torch.nan_to_num(lab_point.to(trainer.device, non_blocking=True), nan=0.0)
 
             with scaler_ctx:
-                model_out = trainer.model(face_rgb, face_uv, global_rgb, stat_features=stat_features)
+                model_out = trainer.model(face_rgb, face_uv, global_rgb,
+                                          stat_features=stat_features, lab_point=lab_point)
 
             # A9: handle tuple (scores, centers)
             if isinstance(model_out, tuple):
@@ -287,6 +292,11 @@ def run_test_with_metadata(trainer: Trainer, ckpt_path: str = None, split: str =
     if has_centers:
         cs = torch.cat(all_centers, dim=0).numpy()[:n]  # (N, 3*10)
         result["centers"] = cs
+    # A13/A14/A15: 报告端需要 lab_values 才能把 delta 还原成 lab_center
+    if has_centers and str(trainer.config.get("LAB_DELTA_CHANNELS", "none")).lower() != "none":
+        result["lab_point"] = np.array(
+            [it.get("lab_point", (np.nan,) * 3) for it in items], dtype=np.float32)[:n]
+        result["lab_delta_channels"] = str(trainer.config.get("LAB_DELTA_CHANNELS", "none")).lower()
     return result
 
 
@@ -348,9 +358,20 @@ def write_deltae_sheets(wb, suffix, pred_lab_arr, gt_lab_arr, metadata, header_f
     de_max = np.max(de[valid])
     de_min = np.min(de[valid])
     write_header(ws_o, ["Metric", "Value"])
+    # A13/A14/A15: 分通道指标（判断 L / a / b 各自该不该用 delta 的直接依据）
+    lab_ok = np.isfinite(pred_lab_arr).all(axis=1) & np.isfinite(gt_lab_arr).all(axis=1)
+    ch_stats = []
+    for cj, cname in enumerate(["L", "a", "b"]):
+        p_ch = pred_lab_arr[lab_ok, cj]
+        g_ch = gt_lab_arr[lab_ok, cj]
+        ch_stats += [
+            (f"MAE_{cname}", float(np.mean(np.abs(p_ch - g_ch))) if p_ch.size else float("nan")),
+            (f"bias_{cname}", float(np.mean(p_ch - g_ch)) if p_ch.size else float("nan")),
+            (f"r_{cname}", float(np.corrcoef(p_ch, g_ch)[0, 1]) if p_ch.size > 2 else float("nan")),
+        ]
     for ri, (k, v) in enumerate([("mean_DE2000", de_mean), ("median_DE2000", de_med),
                                   ("max_DE2000", de_max), ("min_DE2000", de_min),
-                                  ("n_valid", int(valid.sum())), ("n_total", len(de))], 2):
+                                  ("n_valid", int(valid.sum())), ("n_total", len(de))] + ch_stats, 2):
         ws_o.cell(row=ri, column=1, value=k).border = thin_border
         ws_o.cell(row=ri, column=2, value=round(v, 6) if isinstance(v, float) else v).border = thin_border
     ws_o.column_dimensions["A"].width = 20
@@ -529,11 +550,17 @@ def export_to_xlsx(
         write_rawdata_sheet(wb.create_sheet(f"RawData{suffix}"), metadata,
                             pred_col.tolist(), tgt_col.tolist())
 
-        # deltaE2000 sheets (A9/A10 only)
+        # deltaE2000 sheets (A9/A10/A13/A14/A15)
         if has_centers:
             centers = result["centers"]  # (N, 30)
             c_start = col_idx * 3
-            pred_lab = centers[:, c_start:c_start+3]  # (N, 3)
+            pred_lab = centers[:, c_start:c_start+3].copy()  # (N, 3) delta 或 raw
+            if "lab_point" in result:
+                # lab_predict = delta + lab_values(i_point,:)（按通道）
+                _dm = {"l": (1, 0, 0), "ab": (0, 1, 1), "lab": (1, 1, 1)}
+                _ch = str(result.get("lab_delta_channels", "none")).lower()
+                _mask = np.array(_dm.get(_ch, (0, 0, 0)), dtype=np.float32)
+                pred_lab = pred_lab + result["lab_point"] * _mask
             gt_lab = np.full((len(metadata), 3), np.nan)
             for i, meta in enumerate(metadata):
                 name = meta["original_name"]
@@ -589,6 +616,16 @@ def main():
                         choices=["gated", "concat", "se_gated", "cross_attn", "true_cross_attn"], default=None)
     parser.add_argument("--ablation-stat-stream", action="store_true", default=False)
     parser.add_argument("--ablation-lab-center", action="store_true", default=False)
+    parser.add_argument("--ablation-lab-vec", action="store_true", default=False,
+                        help="A13/A14/A15: 额外输入 fit_table.lab_values(i_point,:)")
+    parser.add_argument("--lab-point-csv", type=str, default=None,
+                        help="gen_lab_point_csv.py 生成的 lab_point_by_name.csv")
+    parser.add_argument("--ablation-delta-lab", action="store_true", default=False,
+                        help="A13/A14: center 头回归 delta = lab_center - lab_values，报告时加回")
+    parser.add_argument("--lab-delta-channels", type=str, default=None,
+                        choices=["none", "L", "ab", "Lab"])
+    parser.add_argument("--lab-delta-scale", type=str, default=None,
+                        help="按通道归一化尺度，如 '2,8,10'（raw 通道仍用 128）")
     parser.add_argument("--ablation-loss-type", type=str, choices=["mse", "bce_smooth_l1"], default=None)
     parser.add_argument("--multi-head", action="store_true", default=False)
     parser.add_argument("--attributes", type=str, default=None)
@@ -629,6 +666,17 @@ def main():
         config["ABLATION_STAT_STREAM"] = True
     if bool(args.ablation_lab_center):
         config["ABLATION_LAB_CENTER"] = True
+    if bool(args.ablation_lab_vec):
+        config["ABLATION_LAB_VEC"] = True
+    if args.lab_point_csv:
+        config["LAB_POINT_CSV"] = str(Path(args.lab_point_csv))
+    if bool(args.ablation_delta_lab):
+        config["ABLATION_DELTA_LAB"] = True
+        config["ABLATION_LAB_CENTER"] = True
+    if args.lab_delta_channels:
+        config["LAB_DELTA_CHANNELS"] = args.lab_delta_channels
+    if args.lab_delta_scale:
+        config["LAB_DELTA_SCALE"] = str(args.lab_delta_scale)
     if args.ablation_loss_type is not None:
         config["ABLATION_LOSS_TYPE"] = str(args.ablation_loss_type)
     if bool(args.multi_head):

@@ -53,6 +53,23 @@ class Trainer:
         if self._lab_center:
             self.center_l1 = nn.L1Loss(reduction="none")
 
+        # ===== A13/A14/A15: lab_values 输入 + delta Lab 目标 =====
+        self._lab_vec = bool(self.config.get("ABLATION_LAB_VEC", False))
+        _ch = str(self.config.get("LAB_DELTA_CHANNELS", "none")).strip().lower()
+        _dm = {"none": (0.0, 0.0, 0.0),   # A15: 直接回归 lab_center
+               "l":    (1.0, 0.0, 0.0),   # A14: 只 L 学 delta
+               "ab":   (0.0, 1.0, 1.0),
+               "lab":  (1.0, 1.0, 1.0),   # A13: L*a*b* 全学 delta
+               "all":  (1.0, 1.0, 1.0)}
+        if _ch not in _dm:
+            raise ValueError(f"Unknown LAB_DELTA_CHANNELS={_ch!r} (none/L/ab/Lab)")
+        self._delta_channels = _ch
+        self._delta_mask = torch.tensor(_dm[_ch])                   # (3,) 1=delta, 0=raw
+        self._delta_lab = bool(self._lab_center) and bool(self._delta_mask.sum() > 0)
+        _sc = str(self.config.get("LAB_DELTA_SCALE", "2,8,10")).split(",")
+        self._delta_scale = torch.tensor([float(x) for x in _sc] + [8.0] * (3 - len(_sc)))[:3]
+        # =====================================================
+
         self._setup_optimizer()
         self._setup_scheduler()
 
@@ -148,15 +165,29 @@ class Trainer:
             return batch["attribute_scores"].to(self.device, non_blocking=True)
         return batch["preference_score"].to(self.device, non_blocking=True)
 
+    def _get_lab_point_from_batch(self, batch: Dict) -> Optional[torch.Tensor]:
+        """A13/A14/A15: 每个样本的 lab_values(i_point,:)，(B, 3)。NaN 置 0，由 mask 控制。"""
+        lp = batch.get("lab_point", None)
+        if lp is None:
+            return None
+        lp = lp.to(self.device, non_blocking=True)
+        return torch.nan_to_num(lp, nan=0.0)
+
     def _get_center_from_batch(self, batch: Dict) -> Optional[torch.Tensor]:
-        """A9: 获取 Lab 色度中心 GT，(B, 3*N_attrs)。NaN 处用 0 填充，由 mask 控制。"""
+        """A9/A13/A14/A15: 中心 GT (B,3*N)。delta 通道改为 lab_center - lab_values(i_point,:)。"""
         L = batch.get("preference_L", None)
         center = batch.get("preference_center", None)
         if L is None or center is None:
             return None
         L = L.to(self.device, non_blocking=True)                        # (B, 1)
         ab = center.to(self.device, non_blocking=True)                   # (B, 2)
-        lab = torch.cat([L, ab], dim=1)                                  # (B, 3)
+        lab = torch.cat([L, ab], dim=1)                                  # (B, 3) = lab_center
+        if self._delta_lab:
+            lp = self._get_lab_point_from_batch(batch)
+            if lp is None:
+                raise KeyError("LAB_DELTA_CHANNELS!=none 但 batch 里没有 lab_point，"
+                               "请检查 LAB_POINT_CSV / 改动清单 2c-2e")
+            lab = lab - lp * self._delta_mask.to(self.device)            # 选定通道变 delta
         lab = torch.nan_to_num(lab, nan=0.0)
         # multi-head: replicate for each attr
         if self._multi_head and lab.shape[1] == 3:
@@ -173,6 +204,13 @@ class Trainer:
         ab = center.to(self.device, non_blocking=True)
         lab = torch.cat([L, ab], dim=1)                                  # (B, 3)
         mask = torch.isfinite(lab).float()                               # 1=valid, 0=NaN
+        if self._delta_lab:
+            lp = batch.get("lab_point", None)
+            if lp is not None:
+                lp = lp.to(self.device, non_blocking=True)
+                # delta 通道若 lab_values 是 NaN，则该通道不参与 loss
+                need = self._delta_mask.to(self.device) * (~torch.isfinite(lp)).float()
+                mask = mask * (1.0 - need)
         if self._multi_head:
             mask = mask.repeat(1, len(self._attribute_names))           # (B, 3*N)
         return mask
@@ -182,9 +220,16 @@ class Trainer:
         """Unified loss: score loss + optional center loss."""
         loss, loss_dict = self.criterion(pred_logits, target_score, attr_mask)
         if pred_centers is not None and target_center is not None:
-            # normalise: clamp(C/128, -1, 1) as MS-CMAN
-            pred_centers = torch.clamp(pred_centers / 128.0, -1.0, 1.0)
-            target_center = torch.clamp(target_center / 128.0, -1.0, 1.0)
+            # raw 通道沿用 MS-CMAN 的 /128；delta 通道用 LAB_DELTA_SCALE（按通道）
+            if self._delta_lab:
+                base = torch.where(self._delta_mask > 0,
+                                   self._delta_scale,
+                                   torch.full_like(self._delta_scale, 128.0))
+                scale = base.repeat(pred_centers.shape[1] // 3).to(pred_centers.device)
+            else:
+                scale = 128.0
+            pred_centers = torch.clamp(pred_centers / scale, -1.0, 1.0)
+            target_center = torch.clamp(target_center / scale, -1.0, 1.0)
             center_l1 = self.center_l1(pred_centers, target_center)      # (B, 3*N)
             if center_mask is not None:
                 n_valid = center_mask.sum().clamp_min(1)
@@ -202,6 +247,7 @@ class Trainer:
         total_loss = 0.0
         score_loss_sum = 0.0
         pearson_loss_sum = 0.0
+        center_loss_sum = 0.0        # A13/A14/A15: 便于监控 center 分支
         num_batches = 0
 
         progress = tqdm(self.train_loader, desc=f"Epoch {epoch}", disable=not sys.stdout.isatty())
@@ -222,12 +268,14 @@ class Trainer:
             self.optimizer.zero_grad(set_to_none=True)
 
             if self._lab_center:
-                model_out = self.model(face_rgb, face_uv, global_rgb, stat_features=stat_features)
+                model_out = self.model(face_rgb, face_uv, global_rgb, stat_features=stat_features,
+                        lab_point=self._get_lab_point_from_batch(batch) if self._lab_vec else None)
                 pred_logits, pred_centers = model_out
                 target_center = self._get_center_from_batch(batch)
                 center_mask = self._get_center_mask_from_batch(batch)
             else:
-                pred_logits = self.model(face_rgb, face_uv, global_rgb, stat_features=stat_features)
+                pred_logits = self.model(face_rgb, face_uv, global_rgb, stat_features=stat_features,
+                        lab_point=self._get_lab_point_from_batch(batch) if self._lab_vec else None)
                 pred_centers = None; target_center = None; center_mask = None
 
             pred_logits = torch.nan_to_num(pred_logits, nan=0.0, posinf=1e6, neginf=-1e6)
@@ -252,6 +300,7 @@ class Trainer:
             total_loss += float(loss.item())
             score_loss_sum += float(loss_dict.get("score", 0.0))
             pearson_loss_sum += float(loss_dict.get("pearson", 0.0))
+            center_loss_sum += float(loss_dict.get("center", 0.0))
             num_batches += 1
 
             pearson_r = 1.0 - float(loss_dict.get("pearson", 0.0))
@@ -269,6 +318,7 @@ class Trainer:
             "loss": total_loss / num_batches,
             "score_loss": score_loss_sum / num_batches,
             "pearson_loss": pearson_loss_sum / num_batches,
+            "center_loss": center_loss_sum / num_batches,
         }
 
     @torch.no_grad()
@@ -287,7 +337,8 @@ class Trainer:
                 stat_features = stat_features.to(self.device, non_blocking=True)
             face_uv = None if str(self.config.get("MODEL_VARIANT", "v1")).lower().strip() == "v3" else batch["face_uv"].to(self.device, non_blocking=True)
 
-            model_out = self.model(face_rgb, face_uv, global_rgb, stat_features=stat_features)
+            model_out = self.model(face_rgb, face_uv, global_rgb, stat_features=stat_features,
+                        lab_point=self._get_lab_point_from_batch(batch) if self._lab_vec else None)
             if self._lab_center:
                 pred_logits = model_out[0]
             else:
@@ -404,7 +455,8 @@ class Trainer:
             if stat_features is not None:
                 stat_features = stat_features.to(self.device, non_blocking=True)
             face_uv = None if str(self.config.get("MODEL_VARIANT", "v1")).lower().strip() == "v3" else batch["face_uv"].to(self.device, non_blocking=True)
-            pred_logits = self.model(face_rgb, face_uv, global_rgb, stat_features=stat_features)
+            pred_logits = self.model(face_rgb, face_uv, global_rgb, stat_features=stat_features,
+                        lab_point=self._get_lab_point_from_batch(batch) if self._lab_vec else None)
 
             # 多 head 时只取第 0 个（preference_score）计算 metrics
             if self._multi_head and pred_logits.shape[1] > 1:
