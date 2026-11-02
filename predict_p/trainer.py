@@ -455,8 +455,10 @@ class Trainer:
             if stat_features is not None:
                 stat_features = stat_features.to(self.device, non_blocking=True)
             face_uv = None if str(self.config.get("MODEL_VARIANT", "v1")).lower().strip() == "v3" else batch["face_uv"].to(self.device, non_blocking=True)
-            pred_logits = self.model(face_rgb, face_uv, global_rgb, stat_features=stat_features,
+            model_out = self.model(face_rgb, face_uv, global_rgb, stat_features=stat_features,
                         lab_point=self._get_lab_point_from_batch(batch) if self._lab_vec else None)
+            # A9/A13/A14/A15: center head 存在时 model 返回 (scores, centers)，这里只取 scores
+            pred_logits = model_out[0] if isinstance(model_out, tuple) else model_out
 
             # 多 head 时只取第 0 个（preference_score）计算 metrics
             if self._multi_head and pred_logits.shape[1] > 1:
