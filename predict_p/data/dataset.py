@@ -122,6 +122,19 @@ class FacialPreferenceDataset(Dataset):
         
         logger.info(f"Loaded {len(self.data_items)} samples for {split} split")
     
+    @staticmethod
+    def _resolve_image_path(base: Path, stem: str) -> Path:
+        """图像扩展名解析：.png 优先，其次 .jpg/.jpeg。
+
+        都不存在时返回 .jpg 路径，交由调用方走原有的 "file not found" 分支，
+        这样 toMax（只有 jpg）的行为与改动前完全一致。
+        """
+        for ext in (".png", ".jpg", ".jpeg"):
+            p = base / f"{stem}{ext}"
+            if p.exists():
+                return p
+        return base / f"{stem}.jpg"
+
     def _load_data(self) -> List[Dict]:
         """
         加载所有数据
@@ -174,13 +187,13 @@ class FacialPreferenceDataset(Dataset):
                     a_star = np.nan; b_star = np.nan  # keep sample, mask in loss
                 
                 # 构建文件路径
-                # 人脸RGB文件：原名_face.jpg
-                face_rgb_filename = f"{original_name}_face.jpg"
-                face_rgb_path = self.face_rgb_root / scene_person / face_rgb_filename
-                
-                # 全局RGB文件：原名.jpg（与人脸同一 original_name，但不带 _face 后缀）
-                global_rgb_filename = f"{original_name}.jpg"
-                global_rgb_path = self.global_rgb_root / scene_person / global_rgb_filename
+                # 人脸RGB文件：原名_face.png 优先，兼容 原名_face.jpg（PNG 无损，toMax 的历史数据仍是 jpg）
+                face_rgb_path = self._resolve_image_path(self.face_rgb_root / scene_person,
+                                                         f"{original_name}_face")
+
+                # 全局RGB文件：原名.png 优先，兼容 原名.jpg（与人脸同一 original_name，不带 _face 后缀）
+                global_rgb_path = self._resolve_image_path(self.global_rgb_root / scene_person,
+                                                           original_name)
                 
                 # UV文件：原名_face_uv.npy
                 face_uv_filename = f"{original_name}_face_uv.npy"
