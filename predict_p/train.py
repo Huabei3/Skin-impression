@@ -270,8 +270,11 @@ def main() -> None:
     parser.add_argument(
         "--lab-point-csv",
         type=str,
+        nargs="?",                 # 允许只写 flag 不写值（$LAB 为空时不再报 expected one argument）
+        const="/root/autodl-tmp/peggy/lab_point_by_name.csv",
         default=None,
-        help="gen_lab_point_csv.py 生成的 lab_point_by_name.csv 路径。",
+        help="gen_lab_point_csv.py 生成的 lab_point_by_name.csv 路径"
+             "（省略或留空时用 /root/autodl-tmp/peggy/lab_point_by_name.csv）。",
     )
     parser.add_argument(
         "--ablation-delta-lab",
@@ -398,6 +401,12 @@ def main() -> None:
         config["ABLATION_LAB_VEC"] = True
     if args.lab_point_csv:
         config["LAB_POINT_CSV"] = str(Path(args.lab_point_csv))
+    # 兜底：开了 lab_vec 但 config 里没有可用路径时，用默认查表文件
+    if bool(args.ablation_lab_vec) and not config.get("LAB_POINT_CSV"):
+        _def_lab = Path("/root/autodl-tmp/peggy/lab_point_by_name.csv")
+        if _def_lab.is_file():
+            config["LAB_POINT_CSV"] = str(_def_lab)
+            print(f"[lab_point] --lab-point-csv 未给出，自动使用 {_def_lab}")
     if bool(args.ablation_delta_lab):
         config["ABLATION_DELTA_LAB"] = True
         config["ABLATION_LAB_CENTER"] = True        # delta 头依赖 A9 的 center head
