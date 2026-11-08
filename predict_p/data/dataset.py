@@ -175,7 +175,7 @@ class FacialPreferenceDataset(Dataset):
                    "preference_score(legacy)", "preference_L(legacy)",
                    "preference_a(legacy)", "preference_b(legacy)",
                    "lab_point_L", "lab_point_a", "lab_point_b",
-                   "score", "L*", "a*", "b*"]
+                   "score", "mask", "L*", "a*", "b*"]
 
         wb = openpyxl.Workbook(write_only=True)
         for ai, attr in enumerate(attrs):
@@ -194,6 +194,7 @@ class FacialPreferenceDataset(Dataset):
                 lp = it.get("lab_point") or (np.nan, np.nan, np.nan)
                 pc = it.get("preference_center") or (np.nan, np.nan)
                 sc = it.get("attribute_scores") or ()
+                am = it.get("attribute_mask") or ()
                 lab = it.get("attribute_lab") or ()
                 ws.append([
                     stem, it.get("scene_person"),
@@ -203,6 +204,7 @@ class FacialPreferenceDataset(Dataset):
                     float(pc[1]) if len(pc) > 1 else np.nan,
                     float(lp[0]), float(lp[1]), float(lp[2]),
                     float(sc[ai]) if ai < len(sc) else np.nan,
+                    float(am[ai]) if ai < len(am) else np.nan,
                     float(lab[3 * ai]) if 3 * ai + 2 < len(lab) else np.nan,
                     float(lab[3 * ai + 1]) if 3 * ai + 2 < len(lab) else np.nan,
                     float(lab[3 * ai + 2]) if 3 * ai + 2 < len(lab) else np.nan,
@@ -308,9 +310,17 @@ class FacialPreferenceDataset(Dataset):
                     'preference_center': (a_star, b_star),
                     'lab_point': self._lab_point.get(str(original_name).strip(),
                                  (np.nan, np.nan, np.nan)),   # A13/A14/A15
+                    # 无效属性填 0.0 而不是 NaN（复刻 full_v3_loss_mask 的 NaN 处理；
+                    # 否则 BCEWithLogitsLoss 会算出 NaN → 权重被污染 → train_loss=inf）
                     'attribute_scores': tuple(
-                        self._attr_score.get(str(original_name).strip(), {}).get(_a, np.nan)
-                        for _a in self._attr_names) if self._attr_names else (),
+                        float(_v) if np.isfinite(_v) else 0.0
+                        for _v in (self._attr_score.get(str(original_name).strip(), {}).get(_a, np.nan)
+                                   for _a in self._attr_names)) if self._attr_names else (),
+                    # 1=有效 / 0=该属性该受试者未测
+                    'attribute_mask': tuple(
+                        1.0 if np.isfinite(_v) else 0.0
+                        for _v in (self._attr_score.get(str(original_name).strip(), {}).get(_a, np.nan)
+                                   for _a in self._attr_names)) if self._attr_names else (),
                     'attribute_lab': tuple(
                         _v for _a in self._attr_names
                         for _v in self._attr_lab.get(str(original_name).strip(), {}).get(_a, (np.nan,) * 3)
@@ -1090,6 +1100,8 @@ class FacialPreferenceDataset(Dataset):
         if data_item.get('attribute_scores'):
             out['attribute_scores'] = torch.tensor(data_item['attribute_scores'], dtype=torch.float32)
             out['attribute_lab'] = torch.tensor(data_item['attribute_lab'], dtype=torch.float32)
+            # 1=有效 / 0=未测；trainer 用它做 loss_mask（缺失 full_v3_loss_mask 的这一环就会 NaN）
+            out['attribute_mask'] = torch.tensor(data_item.get('attribute_mask', ()), dtype=torch.float32)
         # Phase 0: Statistical Stream — 预计算的统计特征 (11-D tensor, no string)
         if 'stat_features' in data_item:
             out['stat_features'] = data_item['stat_features']
