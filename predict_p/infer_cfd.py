@@ -81,6 +81,25 @@ def mean_lab_of(img: Image.Image) -> tuple[float, float, float]:
     return tuple(float(v) for v in lab.reshape(-1, 3).mean(axis=0))
 
 
+def mean_lab_masked(orig_img: Image.Image, mask_path: Path) -> tuple[float, float, float] | None:
+    """原图在 mask 覆盖区域（mask>0）内的 CIELAB 均值 —— CFD 的 ori_Lab。
+
+    mask 与 CFD 原图同尺寸（uint8，取值 0/255）；尺寸不一致时按最近邻缩放。
+    """
+    rgb = np.asarray(orig_img.convert("RGB"))
+    try:
+        m = Image.open(mask_path).convert("L")
+    except Exception:
+        return None
+    if m.size != (rgb.shape[1], rgb.shape[0]):
+        m = m.resize((rgb.shape[1], rgb.shape[0]), Image.NEAREST)
+    sel = np.asarray(m) > 0
+    if sel.sum() < 16:
+        return None
+    lab = srgb_to_lab(rgb)[sel]
+    return tuple(float(v) for v in lab.mean(axis=0))
+
+
 # ----------------------------------------------------------------- 数据
 def collect_samples(cfd_root: Path, cfd_nations: set[str] | None, expr: str | None):
     out = []
@@ -111,13 +130,22 @@ class CFDDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, i):
-        _, _, _, orig, face = self.samples[i]
+        _, _, stem, orig, face = self.samples[i]
         try:
             img_f = Image.open(face).convert("RGB")
             img_g = Image.open(orig).convert("RGB")
         except Exception:
             return None
-        lp = mean_lab_of(img_f) if self.lab_mode == "face-mean" else (0.0, 0.0, 0.0)
+        # ori_Lab：优先用「原图 ∩ mask>0」的 Lab 均值；无 mask 时退回 face 裁剪均值
+        lp = None
+        if self.lab_mode == "face-mean":
+            mask_path = resolve_image(orig.parent, f"{stem}-mask")
+            if mask_path is not None:
+                lp = mean_lab_masked(img_g, mask_path)
+            if lp is None:
+                lp = mean_lab_of(img_f)
+        else:
+            lp = (0.0, 0.0, 0.0)
         return self.tf(img_f), self.tf(img_g), torch.tensor(lp, dtype=torch.float32), i
 
 
@@ -131,6 +159,7 @@ def collate_drop_none(batch):
 
 
 def _augment_rawdata_with_lab(xlsx_path: Path, attrs, lab_pred_all: np.ndarray,
+                              lab_ori_all: np.ndarray | None,
                               lab_tgt_all: np.ndarray | None) -> None:
     """给每个 RawData_{attr} sheet 追加 pred_L/pred_a/pred_b、target_L/target_a/target_b、de2000。
 
@@ -144,19 +173,24 @@ def _augment_rawdata_with_lab(xlsx_path: Path, attrs, lab_pred_all: np.ndarray,
     from predict_p.test_only import compute_deltae_ciede2000
 
     wb = load_workbook(xlsx_path)
-    new_heads = ["pred_L", "pred_a", "pred_b", "target_L", "target_a", "target_b", "de2000"]
+    new_heads = ["pred_L", "pred_a", "pred_b",
+                 "ori_L", "ori_a", "ori_b", "de00_ori",
+                 "target_L", "target_a", "target_b", "de00_target"]
     for ai, an in enumerate(attrs):
         sheet = f"RawData_{an}"
         if sheet not in wb.sheetnames:
             continue
         s = ai * 3
         pred_lab = np.asarray(lab_pred_all[:, s:s + 3], dtype=float)
+        ori_lab = np.asarray(lab_ori_all[:, s:s + 3], dtype=float) if lab_ori_all is not None else None
         if lab_tgt_all is not None:
             tgt_lab = np.asarray(lab_tgt_all[:, s:s + 3], dtype=float)
-            de = compute_deltae_ciede2000(pred_lab, tgt_lab)
+            de_tgt = compute_deltae_ciede2000(pred_lab, tgt_lab)
         else:
             tgt_lab = None
-            de = np.full(len(pred_lab), np.nan)
+            de_tgt = np.full(len(pred_lab), np.nan)
+        de_ori = (compute_deltae_ciede2000(pred_lab, ori_lab)
+                  if ori_lab is not None else np.full(len(pred_lab), np.nan))
 
         ws = wb[sheet]
         c0 = ws.max_column + 1                      # 追加在最后，不动原有 8 列
@@ -167,12 +201,12 @@ def _augment_rawdata_with_lab(xlsx_path: Path, attrs, lab_pred_all: np.ndarray,
             r = i + 2
             vals = [round(float(pred_lab[i, 0]), 4), round(float(pred_lab[i, 1]), 4),
                     round(float(pred_lab[i, 2]), 4)]
-            if tgt_lab is None:
-                vals += [None, None, None, None]
-            else:
-                vals += [round(float(tgt_lab[i, 0]), 4), round(float(tgt_lab[i, 1]), 4),
-                         round(float(tgt_lab[i, 2]), 4),
-                         round(float(de[i]), 4) if np.isfinite(de[i]) else None]
+            vals += ([round(float(v), 4) if np.isfinite(v) else None for v in ori_lab[i]]
+                     if ori_lab is not None else [None] * 3)
+            vals.append(round(float(de_ori[i]), 4) if np.isfinite(de_ori[i]) else None)
+            vals += ([round(float(v), 4) if np.isfinite(v) else None for v in tgt_lab[i]]
+                     if tgt_lab is not None else [None] * 3)
+            vals.append(round(float(de_tgt[i]), 4) if np.isfinite(de_tgt[i]) else None)
             for j, v in enumerate(vals):
                 ws.cell(row=r, column=c0 + j, value=v)
     wb.save(xlsx_path)
@@ -301,7 +335,8 @@ def main() -> None:
     # ---------------- 明细 xlsx
     # 10 个属性各有独立 center head → 按属性展开 (N, 3*A) 后再加回先验
     n_attr = len(attrs)
-    lp_expand = np.repeat(lps_all, n_attr, axis=1)              # (N, 3A)
+    # 注意用 tile 而不是 repeat：需要整块 (L,a,b) 按属性重复，repeat 会变成 L,L,L...
+    lp_expand = np.tile(lps_all, (1, n_attr))                   # (N, 3A)
     dm_tile = np.tile(dm, n_attr)                               # (3A,)
     lab_all = cents + lp_expand * dm_tile                       # (N, 3A)
 
@@ -336,7 +371,7 @@ def main() -> None:
             result["lab_delta_channels"] = str(a.lab_delta_channels).lower()
         out_xlsx = out_dir / "results" / "test_results.xlsx"
         export_to_xlsx(str(out_xlsx), argparse.Namespace(), result, None, None)
-        _augment_rawdata_with_lab(out_xlsx, attrs, lab_all, None)
+        _augment_rawdata_with_lab(out_xlsx, attrs, lab_all, lp_expand, None)
         print(f"[out] {out_xlsx}")
 
     s = df["score_01Preference"]

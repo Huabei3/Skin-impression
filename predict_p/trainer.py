@@ -175,6 +175,19 @@ class Trainer:
 
     def _get_center_from_batch(self, batch: Dict) -> Optional[torch.Tensor]:
         """A9/A13/A14/A15: 中心 GT (B,3*N)。delta 通道改为 lab_center - lab_values(i_point,:)。"""
+        # A13 修正: 每属性各自的 lab_center（toMax_gt_{attr}.xlsx 的 L*a*b*），不再 repeat 同一份
+        if self._multi_head and "attribute_lab" in batch:
+            lab = batch["attribute_lab"].to(self.device, non_blocking=True)      # (B, 3*N)
+            if self._delta_lab:
+                lp = self._get_lab_point_from_batch(batch)
+                if lp is None:
+                    raise KeyError("LAB_DELTA_CHANNELS!=none 但 batch 里没有 lab_point")
+                n = len(self._attribute_names)
+                lp_exp = lp.repeat(1, n).to(self.device)                        # (B, 3*N)
+                dm = self._delta_mask.to(self.device).repeat(n)                 # (3*N,)
+                lab = lab - lp_exp * dm
+            return torch.nan_to_num(lab, nan=0.0)
+
         L = batch.get("preference_L", None)
         center = batch.get("preference_center", None)
         if L is None or center is None:
@@ -196,6 +209,20 @@ class Trainer:
 
     def _get_center_mask_from_batch(self, batch: Dict) -> Optional[torch.Tensor]:
         """A9: 中心 GT 的 mask，NaN → mask=0。"""
+        # A13 修正: 每属性 GT 的逐通道 mask
+        if self._multi_head and "attribute_lab" in batch:
+            lab = batch["attribute_lab"].to(self.device, non_blocking=True)      # (B, 3*N)
+            mask = torch.isfinite(lab).float()
+            if self._delta_lab:
+                lp = batch.get("lab_point", None)
+                if lp is not None:
+                    n = len(self._attribute_names)
+                    lp_exp = lp.to(self.device).repeat(1, n)
+                    dm = self._delta_mask.to(self.device).repeat(n)
+                    need = dm * (~torch.isfinite(lp_exp)).float()
+                    mask = mask * (1.0 - need)
+            return mask
+
         L = batch.get("preference_L", None)
         center = batch.get("preference_center", None)
         if L is None or center is None:

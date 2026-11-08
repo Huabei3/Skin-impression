@@ -292,8 +292,9 @@ def run_test_with_metadata(trainer: Trainer, ckpt_path: str = None, split: str =
     if has_centers:
         cs = torch.cat(all_centers, dim=0).numpy()[:n]  # (N, 3*10)
         result["centers"] = cs
-    # A13/A14/A15: 报告端需要 lab_values 才能把 delta 还原成 lab_center
-    if has_centers and str(trainer.config.get("LAB_DELTA_CHANNELS", "none")).lower() != "none":
+    # A13/A14/A15: 报告端需要 lab_values 才能把 delta 还原成 lab_center，
+    # 同时也是 RawData 里的 ori_Lab 列 —— 所以只要有就存，不再依赖 delta 开关
+    if has_centers and any("lab_point" in it for it in items):
         result["lab_point"] = np.array(
             [it.get("lab_point", (np.nan,) * 3) for it in items], dtype=np.float32)[:n]
         result["lab_delta_channels"] = str(trainer.config.get("LAB_DELTA_CHANNELS", "none")).lower()
@@ -484,18 +485,48 @@ def export_to_xlsx(
         for i, w in enumerate([8, 6, 10, 10, 12, 12], 1):
             ws.column_dimensions[xl.utils.get_column_letter(i)].width = w
 
-    def write_rawdata_sheet(ws, metadata, preds, tgts):
+    def write_rawdata_sheet(ws, metadata, preds, tgts,
+                            pred_lab=None, ori_lab=None, tgt_lab=None):
         headers = ["original_name", "scene_person", "model", "ior", "scene", "pred", "target", "abs_error"]
+        # A13 修正: 追加 Lab 相关列
+        #   pred_L/a/b | ori_L/a/b, de00_ori | target_L/a/b, de00_target
+        lab_heads = ["pred_L", "pred_a", "pred_b",
+                     "ori_L", "ori_a", "ori_b", "de00_ori",
+                     "target_L", "target_a", "target_b", "de00_target"]
+        if pred_lab is not None:
+            headers = headers + lab_heads
         write_header(ws, headers)
+
+        def _de00(a, b):
+            try:
+                return float(compute_deltae_ciede2000(
+                    np.asarray([a], dtype=float), np.asarray([b], dtype=float))[0])
+            except Exception:
+                return float("nan")
+
         for r, (meta, pred, tgt) in enumerate(zip(metadata, preds, tgts), 2):
             model, ior, scene = _extract_model_ior_scene(meta["original_name"])
             err = abs(float(pred) - float(tgt)) if np.isfinite(tgt) else float("nan")
             row_data = [meta["original_name"], meta["scene_person"], model, ior, scene,
                         round(float(pred), 6), round(float(tgt), 6),
                         round(err, 6) if np.isfinite(err) else "N/A"]
+            if pred_lab is not None:
+                p = np.asarray(pred_lab[r - 2], dtype=float)
+                o = np.asarray(ori_lab[r - 2], dtype=float) if ori_lab is not None else None
+                t = np.asarray(tgt_lab[r - 2], dtype=float) if tgt_lab is not None else None
+                row_data += [round(float(v), 4) if np.isfinite(v) else None for v in p]
+                row_data += ([round(float(v), 4) if np.isfinite(v) else None for v in o]
+                             if o is not None else [None] * 3)
+                d_ori = _de00(o, p) if o is not None and np.isfinite(o).all() and np.isfinite(p).all() else float("nan")
+                row_data.append(round(d_ori, 4) if np.isfinite(d_ori) else None)
+                row_data += ([round(float(v), 4) if np.isfinite(v) else None for v in t]
+                             if t is not None else [None] * 3)
+                d_tgt = _de00(t, p) if t is not None and np.isfinite(t).all() and np.isfinite(p).all() else float("nan")
+                row_data.append(round(d_tgt, 4) if np.isfinite(d_tgt) else None)
             for ci, val in enumerate(row_data, 1):
                 ws.cell(row=r, column=ci, value=val).border = thin_border
-        for i, w in enumerate([28, 16, 8, 6, 10, 12, 12, 12], 1):
+        widths = [28, 16, 8, 6, 10, 12, 12, 12] + [10] * (len(headers) - 8)
+        for i, w in enumerate(widths, 1):
             ws.column_dimensions[xl.utils.get_column_letter(i)].width = w
         ws.freeze_panes = "A2"
 
@@ -547,25 +578,32 @@ def export_to_xlsx(
         write_overall_sheet(wb.create_sheet(f"Overall{suffix}"), metrics)
         per_group = compute_per_group_pearson(pred_col, tgt_col, metadata)
         write_pergroup_sheet(wb.create_sheet(f"PerGroup{suffix}"), per_group)
-        write_rawdata_sheet(wb.create_sheet(f"RawData{suffix}"), metadata,
-                            pred_col.tolist(), tgt_col.tolist())
 
-        # deltaE2000 sheets (A9/A10/A13/A14/A15)
+        # ---- Lab 三件套：pred / ori / target（RawData 与 DeltaE 共用，先算）----
+        pred_lab = ori_lab = gt_lab = None
         if has_centers:
-            centers = result["centers"]  # (N, 30)
+            centers = result["centers"]  # (N, 3*C)
             c_start = col_idx * 3
-            pred_lab = centers[:, c_start:c_start+3].copy()  # (N, 3) delta 或 raw
+            pred_lab = centers[:, c_start:c_start + 3].copy()  # (N, 3) delta 或 raw
             if "lab_point" in result:
                 # lab_predict = delta + lab_values(i_point,:)（按通道）
                 _dm = {"l": (1, 0, 0), "ab": (0, 1, 1), "lab": (1, 1, 1)}
                 _ch = str(result.get("lab_delta_channels", "none")).lower()
                 _mask = np.array(_dm.get(_ch, (0, 0, 0)), dtype=np.float32)
-                pred_lab = pred_lab + result["lab_point"] * _mask
+                ori_lab = np.asarray(result["lab_point"], dtype=np.float32)
+                pred_lab = pred_lab + ori_lab * _mask
             gt_lab = np.full((len(metadata), 3), np.nan)
             for i, meta in enumerate(metadata):
                 name = meta["original_name"]
                 lab = per_attr_lab.get(name, {}).get(attr, (np.nan, np.nan, np.nan))
                 gt_lab[i] = lab
+
+        write_rawdata_sheet(wb.create_sheet(f"RawData{suffix}"), metadata,
+                            pred_col.tolist(), tgt_col.tolist(),
+                            pred_lab=pred_lab, ori_lab=ori_lab, tgt_lab=gt_lab)
+
+        # deltaE2000 sheets (A9/A10/A13/A14/A15)
+        if has_centers:
             write_deltae_sheets(wb, suffix, pred_lab, gt_lab, metadata,
                                 header_font, header_fill, thin_border)
 

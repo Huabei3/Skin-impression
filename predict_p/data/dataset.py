@@ -43,7 +43,9 @@ class FacialPreferenceDataset(Dataset):
                  valid_prefixes: Optional[List[str]] = None,
                  test_prefixes: Optional[List[str]] = None,
                  split_export_path: Optional[str] = None,
-                 lab_point_csv: Optional[str] = None):
+                 lab_point_csv: Optional[str] = None,
+                 attribute_gt_dir: Optional[str] = None,
+                 attribute_names: Optional[List[str]] = None):
         """
         初始化数据集
         
@@ -88,6 +90,37 @@ class FacialPreferenceDataset(Dataset):
                         self._lab_point[r["original_name"].strip()] = (np.nan,) * 3
             logger.info(f"Loaded lab_values(i_point,:) for {len(self._lab_point)} samples")
         # ==========================================
+
+        # ===== A13 修正: 每属性各自的 lab_center / impression_index =====
+        # 之前只从单一 toMax_gt.xlsx 取一份 L*a*b*，导致 10 个 head 共用同一目标。
+        # 这里按属性读 toMax_gt_{attr}.xlsx，得到 name -> {attr: (L,a,b)} 与 {attr: score}。
+        self._attr_names: List[str] = list(attribute_names or [])
+        self._attr_lab: Dict[str, Dict[str, tuple]] = {}
+        self._attr_score: Dict[str, Dict[str, float]] = {}
+        if attribute_gt_dir and self._attr_names:
+            _gt_dir = Path(attribute_gt_dir)
+            for _attr in self._attr_names:
+                _fp = _gt_dir / f"toMax_gt_{_attr}.xlsx"
+                if not _fp.exists():
+                    logger.warning(f"[attr-gt] missing {_fp}")
+                    continue
+                _xls = pd.ExcelFile(_fp)
+                for _sh in _xls.sheet_names:
+                    _df = pd.read_excel(_xls, sheet_name=_sh)
+                    if _df.shape[1] < 5:
+                        continue
+                    for _row in _df.itertuples(index=False, name=None):
+                        _name = str(_row[0]).strip()
+                        try:
+                            _sc = float(_row[1])
+                            _lab = (float(_row[2]), float(_row[3]), float(_row[4]))
+                        except (TypeError, ValueError):
+                            continue
+                        self._attr_score.setdefault(_name, {})[_attr] = _sc
+                        self._attr_lab.setdefault(_name, {})[_attr] = _lab
+            logger.info(f"[attr-gt] loaded {len(self._attr_names)} attrs from {_gt_dir}, "
+                        f"names={len(self._attr_score)}")
+        # ==============================================================
 
         # 全局图根目录：默认回退到 face_rgb_root，便于兼容旧配置
         self.global_rgb_root = Path(global_rgb_root) if global_rgb_root is not None else self.face_rgb_root
@@ -220,6 +253,13 @@ class FacialPreferenceDataset(Dataset):
                     'preference_center': (a_star, b_star),
                     'lab_point': self._lab_point.get(str(original_name).strip(),
                                  (np.nan, np.nan, np.nan)),   # A13/A14/A15
+                    'attribute_scores': tuple(
+                        self._attr_score.get(str(original_name).strip(), {}).get(_a, np.nan)
+                        for _a in self._attr_names) if self._attr_names else (),
+                    'attribute_lab': tuple(
+                        _v for _a in self._attr_names
+                        for _v in self._attr_lab.get(str(original_name).strip(), {}).get(_a, (np.nan,) * 3)
+                    ) if self._attr_names else (),   # A13 修正: 每属性 lab_center
                     'scene_person': scene_person,
                     'original_name': original_name
                 }
@@ -984,6 +1024,10 @@ class FacialPreferenceDataset(Dataset):
             'lab_point': torch.tensor(data_item.get('lab_point', (np.nan,) * 3),
                           dtype=torch.float32),                     # A13/A14/A15
         }
+        # A13 修正: 每属性目标（score 与 lab_center），multi-head 训练时使用
+        if data_item.get('attribute_scores'):
+            out['attribute_scores'] = torch.tensor(data_item['attribute_scores'], dtype=torch.float32)
+            out['attribute_lab'] = torch.tensor(data_item['attribute_lab'], dtype=torch.float32)
         # Phase 0: Statistical Stream — 预计算的统计特征 (11-D tensor, no string)
         if 'stat_features' in data_item:
             out['stat_features'] = data_item['stat_features']
@@ -1117,6 +1161,8 @@ def create_data_loaders(config: Dict) -> Tuple[DataLoader, DataLoader, DataLoade
         test_prefixes=test_prefixes,
         split_export_path=split_export_path,  # 只在 train 时导出
         lab_point_csv=config.get("LAB_POINT_CSV"),     # A13/A14/A15
+        attribute_gt_dir=config.get("ATTRIBUTE_GT_DIR"),      # A13 修正: 每属性 GT
+        attribute_names=config.get("ATTRIBUTE_HEAD_NAMES"),   # A13 修正
     )
     
     val_dataset = FacialPreferenceDataset(
@@ -1140,6 +1186,8 @@ def create_data_loaders(config: Dict) -> Tuple[DataLoader, DataLoader, DataLoade
         test_prefixes=test_prefixes,
         split_export_path=None,  # 不重复导出
         lab_point_csv=config.get("LAB_POINT_CSV"),     # A13/A14/A15
+        attribute_gt_dir=config.get("ATTRIBUTE_GT_DIR"),      # A13 修正: 每属性 GT
+        attribute_names=config.get("ATTRIBUTE_HEAD_NAMES"),   # A13 修正
     )
     
     test_dataset = FacialPreferenceDataset(
@@ -1163,6 +1211,8 @@ def create_data_loaders(config: Dict) -> Tuple[DataLoader, DataLoader, DataLoade
         test_prefixes=test_prefixes,
         split_export_path=None,  # 不重复导出
         lab_point_csv=config.get("LAB_POINT_CSV"),     # A13/A14/A15
+        attribute_gt_dir=config.get("ATTRIBUTE_GT_DIR"),      # A13 修正: 每属性 GT
+        attribute_names=config.get("ATTRIBUTE_HEAD_NAMES"),   # A13 修正
     )
     
     # 创建数据加载器
