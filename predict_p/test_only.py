@@ -802,7 +802,10 @@ def main():
         config["FACE_RGB_ROOT"] = str(dr / "rendered_face")
         config["FACE_UV_ROOT"] = str(dr / "rendered_face_uv")
         config["GLOBAL_RGB_ROOT"] = str(dr / "rendered_2max")
-        config["GT_EXCEL_PATH"] = str(dr / "gt" / "Preference_non_model_gt.xlsx")
+        # 样本清单：优先 toMax_gt.xlsx（现用），退回旧命名 Preference_non_model_gt.xlsx
+        _gt_cands = [dr / "gt" / "toMax_gt.xlsx",
+                     dr / "gt" / "Preference_non_model_gt.xlsx"]
+        config["GT_EXCEL_PATH"] = str(next((p for p in _gt_cands if p.is_file()), _gt_cands[0]))
     if args.gt_excel:
         config["GT_EXCEL_PATH"] = str(Path(args.gt_excel))
     if args.output_root:
