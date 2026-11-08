@@ -47,6 +47,127 @@ ALL_ATTRIBUTES = [
 ]
 
 
+def _srgb_to_lab(rgb: np.ndarray) -> np.ndarray:
+    """(H,W,3) uint8 sRGB → CIELAB(D65)。"""
+    x = rgb.astype(np.float32) / 255.0
+    x = np.where(x <= 0.04045, x / 12.92, ((x + 0.055) / 1.055) ** 2.4)
+    m = np.array([[0.4124564, 0.3575761, 0.1804375],
+                  [0.2126729, 0.7151522, 0.0721750],
+                  [0.0193339, 0.1191920, 0.9503041]], dtype=np.float32)
+    xyz = x @ m.T
+    t = xyz / np.array([0.95047, 1.0, 1.08883], dtype=np.float32)
+    f = np.where(t > 0.008856, np.cbrt(t), 7.787 * t + 16.0 / 116.0)
+    return np.stack([116.0 * f[..., 1] - 16.0,
+                     500.0 * (f[..., 0] - f[..., 1]),
+                     200.0 * (f[..., 1] - f[..., 2])], axis=-1)
+
+
+def _lab_to_srgb(lab: np.ndarray) -> np.ndarray:
+    """CIELAB(D65) → sRGB(0~255)。"""
+    fy = (lab[..., 0] + 16.0) / 116.0
+    fx = fy + lab[..., 1] / 500.0
+    fz = fy - lab[..., 2] / 200.0
+
+    def inv(f):
+        return np.where(f ** 3 > 0.008856, f ** 3, (f - 16.0 / 116.0) / 7.787)
+
+    xyz = np.stack([inv(fx) * 0.95047, inv(fy), inv(fz) * 1.08883], axis=-1)
+    m_inv = np.linalg.inv(np.array([[0.4124564, 0.3575761, 0.1804375],
+                                    [0.2126729, 0.7151522, 0.0721750],
+                                    [0.0193339, 0.1191920, 0.9503041]], dtype=np.float32))
+    rgb = xyz @ m_inv.T
+    rgb = np.where(rgb <= 0.0031308, 12.92 * rgb,
+                   1.055 * np.power(np.clip(rgb, 0, None), 1 / 2.4) - 0.055)
+    return np.clip(rgb * 255.0, 0, 255)
+
+
+def _render_pred_pics(config: Dict, args, result: Dict, attrs) -> None:
+    """--if_render（toMax）：把 global 原图 skin 区渲染到 pred_Lab。
+
+    ori_Lab = fit_table.lab_values(i_point,:)（= result["lab_point"]，不是从像素现求）
+    平移量   = pred_Lab − ori_Lab（= 模型输出的 delta）
+    mask     = {MASK_ROOT}/{model}{ior}/{scene}.JPG（>0 参与平移）
+    输出     = {output_root}/{exp_name}/predict_p_{race}/pred_pics/{name}_{attr}.jpg
+               {output_root}/{exp_name}/predict_p_{race}/check_pics/{name}.jpg
+    """
+    import cv2
+    from PIL import Image as _Image
+
+    out_dir = Path(args.output_root) / args.exp_name / f"predict_p_{args.race}"
+    pdir, cdir = out_dir / "pred_pics", out_dir / "check_pics"
+    pdir.mkdir(parents=True, exist_ok=True)
+    cdir.mkdir(parents=True, exist_ok=True)
+
+    meta = result["metadata"]
+    centers = result.get("centers")
+    lp_all = result.get("lab_point")
+    if centers is None or lp_all is None:
+        logger.warning("[render] 缺 centers 或 lab_point，跳过")
+        return
+
+    dm = {"l": (1, 0, 0), "ab": (0, 1, 1), "lab": (1, 1, 1)}
+    dch = str(result.get("lab_delta_channels", "none")).lower()
+    dvec = np.array(dm.get(dch, (0, 0, 0)), dtype=np.float32)
+
+    global_root = Path(config.get("GLOBAL_RGB_ROOT", ""))
+    mask_root = Path(config.get("MASK_ROOT", "/root/autodl-tmp/mask"))
+    limit = int(getattr(args, "render_limit", 0) or 0)
+    n = min(limit or len(meta), len(meta))
+
+    n_ok = n_mask = 0
+    for i in range(n):
+        name = meta[i]["original_name"]
+        sp = meta[i]["scene_person"]
+        gpath = None
+        for ext in (".jpg", ".png", ".jpeg"):
+            p = global_root / sp / f"{name}{ext}"
+            if p.is_file():
+                gpath = p
+                break
+        if gpath is None:
+            continue
+        try:
+            img = np.asarray(_Image.open(gpath).convert("RGB"))
+        except Exception:
+            continue
+
+        model, ior, scene = _extract_model_ior_scene(name)
+        sel = np.ones(img.shape[:2], dtype=bool)
+        for mname in (f"{scene}.JPG", f"{scene}.jpg", f"{scene}.png"):
+            mask_p = mask_root / f"{model}{ior}" / mname
+            if mask_p.is_file():
+                try:
+                    msk = np.asarray(_Image.open(mask_p).convert("L"))
+                    if msk.shape[:2] != img.shape[:2]:
+                        msk = np.asarray(_Image.fromarray(msk).resize(
+                            (img.shape[1], img.shape[0]), _Image.NEAREST))
+                    sel = msk > 0
+                    n_mask += 1
+                except Exception:
+                    pass
+                break
+
+        chk = np.zeros_like(img)
+        chk[sel] = img[sel]
+        cv2.imwrite(str(cdir / f"{name}.jpg"), chk[:, :, ::-1],
+                    [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+
+        lab = _srgb_to_lab(img)
+        ori = np.asarray(lp_all[i], dtype=np.float32)
+        for ai, an in enumerate(attrs):
+            p = np.asarray(centers[i, ai * 3:ai * 3 + 3], dtype=np.float32) + ori * dvec
+            if not (np.isfinite(p).all() and np.isfinite(ori).all()):
+                continue
+            shifted = lab.copy()
+            shifted[sel] = lab[sel] + (p - ori)
+            rgb = _lab_to_srgb(shifted).astype(np.uint8)
+            cv2.imwrite(str(pdir / f"{name}_{an}.jpg"), rgb[:, :, ::-1],
+                        [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+            n_ok += 1
+
+    logger.info(f"[render] {n_ok} 张 pred_pics（{n_mask}/{n} 命中 mask）-> {pdir}")
+
+
 def _extract_model_ior_scene(original_name: str) -> tuple:
     s = str(original_name)
     parts = s.rsplit("_", 1)
@@ -668,6 +789,11 @@ def main():
     parser.add_argument("--multi-head", action="store_true", default=False)
     parser.add_argument("--attributes", type=str, default=None)
     parser.add_argument("--exp-name", type=str, default=None)
+    parser.add_argument("--if_render", action="store_true", default=False,
+                        help="额外输出 pred_pics（global 图 skin 区渲染到 pred_Lab）与 check_pics（global×mask）")
+    parser.add_argument("--render-limit", type=int, default=0, help="只渲染前 N 张（0=全部）")
+    parser.add_argument("--mask-root", type=str, default="/root/autodl-tmp/mask",
+                        help="{model}{ior}/{scene}.JPG 形式的 skin mask 根目录")
     args = parser.parse_args()
 
     config = Config.get_config_dict()
@@ -810,6 +936,11 @@ def main():
     exp_dir = Path(trainer.config["OUTPUT_DIR"])
     output_xlsx = exp_dir / "results" / f"test_results.xlsx"
     export_to_xlsx(str(output_xlsx), args, result, per_attr_gt, per_attr_lab)
+
+    if bool(getattr(args, "if_render", False)):
+        config["MASK_ROOT"] = str(getattr(args, "mask_root", "/root/autodl-tmp/mask"))
+        _render_pred_pics(config, args, result,
+                          ALL_ATTRIBUTES if args.multi_head else ["01Preference"])
 
 
 if __name__ == "__main__":
