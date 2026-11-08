@@ -155,6 +155,61 @@ class FacialPreferenceDataset(Dataset):
         
         logger.info(f"Loaded {len(self.data_items)} samples for {split} split")
     
+    def _export_data_check(self, data_items: List[Dict]) -> None:
+        """把本次加载的全部样本导出成 data_check.xlsx（每个属性一个 sheet）。
+
+        位置：与 split_result.xlsx 同级的 results/ 下，即
+              {output_root}/{exp_name}/predict_p_{race}/results/data_check.xlsx
+        每行 = 一张图；列 = data_item 各字段（路径、单目标 legacy、lab_point、
+              该属性自己的 score 与 lab_center）+ mask 图片绝对路径。
+        """
+        import openpyxl
+
+        out_path = Path(self.split_export_path).parent / "results" / "data_check.xlsx"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        attrs = list(self._attr_names) if self._attr_names else ["01Preference"]
+        n_a = len(attrs)
+
+        headers = ["original_name", "scene_person",
+                   "face_rgb_path", "global_rgb_path", "mask_path",
+                   "preference_score(legacy)", "preference_L(legacy)",
+                   "preference_a(legacy)", "preference_b(legacy)",
+                   "lab_point_L", "lab_point_a", "lab_point_b",
+                   "score", "L*", "a*", "b*"]
+
+        wb = openpyxl.Workbook(write_only=True)
+        for ai, attr in enumerate(attrs):
+            ws = wb.create_sheet(title=str(attr)[:31])
+            ws.append(headers)
+            for it in data_items:
+                gp = Path(it.get("global_rgb_path") or "")
+                fp = Path(it.get("face_rgb_path") or "")
+                stem = str(it.get("original_name", "")).strip()
+                mask_p = ""
+                for cand in (gp.parent / f"{stem}-mask.png", gp.parent / f"{stem}_mask.png",
+                             fp.parent / f"{stem}-mask.png"):
+                    if cand.name and cand.is_file():
+                        mask_p = str(cand)
+                        break
+                lp = it.get("lab_point") or (np.nan, np.nan, np.nan)
+                pc = it.get("preference_center") or (np.nan, np.nan)
+                sc = it.get("attribute_scores") or ()
+                lab = it.get("attribute_lab") or ()
+                ws.append([
+                    stem, it.get("scene_person"),
+                    it.get("face_rgb_path"), it.get("global_rgb_path"), mask_p,
+                    it.get("preference_score"), it.get("preference_L"),
+                    float(pc[0]) if len(pc) > 0 else np.nan,
+                    float(pc[1]) if len(pc) > 1 else np.nan,
+                    float(lp[0]), float(lp[1]), float(lp[2]),
+                    float(sc[ai]) if ai < len(sc) else np.nan,
+                    float(lab[3 * ai]) if 3 * ai + 2 < len(lab) else np.nan,
+                    float(lab[3 * ai + 1]) if 3 * ai + 2 < len(lab) else np.nan,
+                    float(lab[3 * ai + 2]) if 3 * ai + 2 < len(lab) else np.nan,
+                ])
+        wb.save(out_path)
+        logger.info(f"[data_check] exported {out_path}  rows={len(data_items)} sheets={n_a}")
+
     @staticmethod
     def _resolve_image_path(base: Path, stem: str) -> Path:
         """图像扩展名解析：.png 优先，其次 .jpg/.jpeg。
@@ -265,6 +320,13 @@ class FacialPreferenceDataset(Dataset):
                 }
                 data_items.append(data_item)
         
+        # 数据体检表（只在 train 数据集导出一次，与 split_result.xlsx 同目录）
+        if self.split_export_path:
+            try:
+                self._export_data_check(data_items)
+            except Exception as _e:
+                logger.warning(f"[data_check] export failed: {_e}")
+
         logger.info(f"Total loaded samples: {len(data_items)}")
         return data_items
 

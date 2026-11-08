@@ -76,6 +76,27 @@ def srgb_to_lab(rgb: np.ndarray) -> np.ndarray:
                      200.0 * (f[..., 1] - f[..., 2])], axis=-1)
 
 
+def lab_to_srgb(lab: np.ndarray) -> np.ndarray:
+    """CIELAB(D65) → sRGB(0~255)，与 srgb_to_lab 互逆。"""
+    L = lab[..., 0]
+    a = lab[..., 1]
+    b = lab[..., 2]
+    fy = (L + 16.0) / 116.0
+    fx = fy + a / 500.0
+    fz = fy - b / 200.0
+
+    def inv(f):
+        return np.where(f ** 3 > 0.008856, f ** 3, (f - 16.0 / 116.0) / 7.787)
+
+    xyz = np.stack([inv(fx) * 0.95047, inv(fy), inv(fz) * 1.08883], axis=-1)
+    m_inv = np.linalg.inv(np.array([[0.4124564, 0.3575761, 0.1804375],
+                                    [0.2126729, 0.7151522, 0.0721750],
+                                    [0.0193339, 0.1191920, 0.9503041]], dtype=np.float32))
+    rgb = xyz @ m_inv.T
+    rgb = np.where(rgb <= 0.0031308, 12.92 * rgb, 1.055 * np.power(np.clip(rgb, 0, None), 1 / 2.4) - 0.055)
+    return np.clip(rgb * 255.0, 0, 255)
+
+
 def mean_lab_of(img: Image.Image) -> tuple[float, float, float]:
     lab = srgb_to_lab(np.asarray(img.convert("RGB")))
     return tuple(float(v) for v in lab.reshape(-1, 3).mean(axis=0))
@@ -158,6 +179,60 @@ def collate_drop_none(batch):
             torch.tensor([b[3] for b in batch], dtype=torch.long))
 
 
+def _render_pics(samples, lab_pred_all, ori_all, out_dir: Path, attrs, limit: int = 0) -> None:
+    """--if_render：
+
+    pred_pics/{stem}_{attr}.jpg  —— 把原图 mask 区域在 CIELAB 里整体平移 (pred_Lab - ori_Lab)，
+                                    使其平均色 = 预测色（保留纹理）。
+    check_pics/{stem}.jpg        —— global 图 × mask（mask=0 处置 0），用于核对 mask 对位。
+    """
+    import cv2
+
+    pdir = out_dir / "pred_pics"
+    cdir = out_dir / "check_pics"
+    pdir.mkdir(parents=True, exist_ok=True)
+    cdir.mkdir(parents=True, exist_ok=True)
+
+    n = min(limit or len(samples), len(samples))
+    for i in range(n):
+        _, _, stem, orig, _ = samples[i]
+        try:
+            img = np.asarray(Image.open(orig).convert("RGB"))
+        except Exception:
+            continue
+        mask_p = resolve_image(orig.parent, f"{stem}-mask")
+        if mask_p is not None:
+            m = np.asarray(Image.open(mask_p).convert("L"))
+            if m.shape[:2] != img.shape[:2]:
+                m = np.asarray(Image.fromarray(m).resize((img.shape[1], img.shape[0]), Image.NEAREST))
+            sel = m > 0
+        else:
+            sel = np.ones(img.shape[:2], dtype=bool)
+
+        # check_pics：global × mask
+        chk = np.zeros_like(img)
+        chk[sel] = img[sel]
+        cv2.imwrite(str(cdir / f"{stem}.jpg"), chk[:, :, ::-1],
+                    [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+
+        # pred_pics：按属性渲染
+        lab = srgb_to_lab(img)
+        ori = np.asarray(ori_all[i, :3], dtype=np.float32)
+        for ai, an in enumerate(attrs):
+            p = np.asarray(lab_pred_all[i, ai * 3:ai * 3 + 3], dtype=np.float32)
+            if not (np.isfinite(p).all() and np.isfinite(ori).all()):
+                continue
+            shifted = lab.copy()
+            shifted[sel] = lab[sel] + (p - ori)
+            rgb = lab_to_srgb(shifted).astype(np.uint8)
+            cv2.imwrite(str(pdir / f"{stem}_{an}.jpg"), rgb[:, :, ::-1],
+                        [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+        if i % 50 == 0:
+            print(f"[render] {i}/{n}")
+
+    print(f"[render] pred_pics={pdir}  check_pics={cdir}")
+
+
 def _augment_rawdata_with_lab(xlsx_path: Path, attrs, lab_pred_all: np.ndarray,
                               lab_ori_all: np.ndarray | None,
                               lab_tgt_all: np.ndarray | None) -> None:
@@ -237,6 +312,9 @@ def main() -> None:
     ap.add_argument("--expr", default=None)
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--no-tomax-format", action="store_true", help="不写 results/test_results.xlsx")
+    ap.add_argument("--if_render", action="store_true", default=False,
+                    help="额外输出 pred_pics（把原图 skin 区渲染到 pred_Lab）与 check_pics（global×mask）")
+    ap.add_argument("--render-limit", type=int, default=0, help="只渲染前 N 张（0=全部，调试用）")
     a = ap.parse_args()
 
     cfd_root, ckpt = Path(a.cfd_root), Path(a.resume)
@@ -373,6 +451,10 @@ def main() -> None:
         export_to_xlsx(str(out_xlsx), argparse.Namespace(), result, None, None)
         _augment_rawdata_with_lab(out_xlsx, attrs, lab_all, lp_expand, None)
         print(f"[out] {out_xlsx}")
+
+    # ---------------- ③ --if_render：pred_pics / check_pics
+    if a.if_render:
+        _render_pics(samples, lab_all, lp_expand, out_dir, attrs, a.render_limit)
 
     s = df["score_01Preference"]
     print(f"[stat] score_01Preference min={s.min():.4f} mean={s.mean():.4f} "
